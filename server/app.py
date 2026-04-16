@@ -57,6 +57,12 @@ def download_external_model(url: str, filename: str, model_dir: str) -> None:
     cached_path = Path(cache_dir) / filename
     if not cached_path.exists():
         print(f"Downloading {filename} from {url}...")
+        # Civitai requires token as a query parameter, not a Bearer header
+        download_url = url
+        civitai_token = os.environ.get("CIVITAI_API_KEY")
+        if civitai_token and "civitai" in url:
+            separator = "&" if "?" in url else "?"
+            download_url = f"{url}{separator}token={civitai_token}"
         cmd = [
             "aria2c",
             "--console-log-level=error",
@@ -65,11 +71,8 @@ def download_external_model(url: str, filename: str, model_dir: str) -> None:
             "-s", "16",
             "-o", filename,
             "-d", cache_dir,
+            download_url,
         ]
-        civitai_token = os.environ.get("CIVITAI_API_KEY")
-        if civitai_token and "civitai" in url:
-            cmd += [f"--header=Authorization: Bearer {civitai_token}"]
-        cmd.append(url)
         subprocess.run(
             cmd,
             check=True,
