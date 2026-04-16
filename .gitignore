@@ -15,3 +15,14 @@ plugins.py
 
 # Workflow
 workflow_api.json
+workflows/*.json
+!workflows/.gitkeep
+
+# Output
+output/
+
+# Logs
+logs/
+
+# Reference files
+ComfyUI-云端架构构思.md

@@ -13,7 +13,7 @@ Good for testing wan2.2 or other video generation models.
 ## Installation
 
 1. Clone this repository.
-2. Install the Modal client:
+2. Install dependencies:
    ```bash
    uv sync
    ```
@@ -46,27 +46,45 @@ Add these custom nodes to `plugins.py`(be careful of node id).
 
 ## Usage
 
-### Serve (Development)
+### Web UI — Serve (Development)
 
 Run the following command to start ComfyUI in development mode:
 ```bash
-modal serve comfyui.py
+modal serve server/ui.py
 ```
 This will provide a temporary URL where you can access the ComfyUI interface.
 
-### Deploy (Production)
+### Web UI — Deploy (Production)
 
 To deploy ComfyUI as a persistent app:
 ```bash
-modal deploy comfyui.py
+modal deploy server/ui.py
+```
+
+### Headless Inference
+
+Run ComfyUI workflows without the browser — submit a JSON workflow, choose a GPU, and download results:
+```bash
+python -m client.infer
+```
+
+Place your ComfyUI API-format workflow JSON files in the `workflows/` directory.
+
+### Volume Management
+
+List cached models or clean up old inference sessions:
+```bash
+python -m scripts.manage_volumes
 ```
 
 ## Features
 
+- **Dual Mode**: Web UI for workflow design, headless mode for batch production.
 - **Auto-scaling**: Scales down to zero when not in use to save costs.
 - **GPU Snapshots**: Fast startup times using Modal's GPU snapshots.
 - **Model Caching**: Uses Modal Volumes to cache models across runs.
 - **Custom Node Management**: Integrated with `comfy-cli` for easy plugin installation.
+- **Interactive CLI**: GPU selection, workflow file, timeout via questionary prompts.
 
 ## Contributing
 
