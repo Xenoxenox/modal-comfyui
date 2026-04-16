@@ -26,12 +26,13 @@ def hf_download(
     repo_id: str,
     filename: str,
     model_dir: str = f"{COMFY_ROOT}/models/checkpoints",
+    save_as: str | None = None,
 ) -> None:
     import os
 
     from huggingface_hub import hf_hub_download
 
-    model = hf_hub_download(
+    cached = hf_hub_download(
         repo_id=repo_id,
         filename=filename,
         cache_dir=CACHE_MOUNT,
@@ -39,13 +40,12 @@ def hf_download(
     )
 
     Path(model_dir).mkdir(parents=True, exist_ok=True)
-    local_filename = Path(filename).name
-    subprocess.run(
-        f"ln -s {model} {model_dir}/{local_filename}",
-        shell=True,
-        check=True,
-    )
-    print(f"Downloaded {repo_id}/{filename} to {model_dir}/{local_filename}")
+    link_name = save_as if save_as else Path(filename).name
+    target = Path(model_dir) / link_name
+    if target.exists() or target.is_symlink():
+        target.unlink()
+    target.symlink_to(cached)
+    print(f"Linked {repo_id}/{filename} → {target}")
 
 
 def download_external_model(url: str, filename: str, model_dir: str) -> None:
@@ -57,28 +57,15 @@ def download_external_model(url: str, filename: str, model_dir: str) -> None:
     cached_path = Path(cache_dir) / filename
     if not cached_path.exists():
         print(f"Downloading {filename} from {url}...")
-        # Civitai requires token as a query parameter, not a Bearer header
-        download_url = url
         civitai_token = os.environ.get("CIVITAI_API_KEY")
+        # CivitAI: append token as query param (official method per docs)
         if civitai_token and "civitai" in url:
             separator = "&" if "?" in url else "?"
             download_url = f"{url}{separator}token={civitai_token}"
-        cmd = [
-            "aria2c",
-            "--console-log-level=error",
-            "--summary-interval=0",
-            "-x", "16",
-            "-s", "16",
-            "-o", filename,
-            "-d", cache_dir,
-            download_url,
-        ]
-        subprocess.run(
-            cmd,
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        else:
+            download_url = url
+        cmd = ["wget", "--content-disposition", "-O", str(cached_path), download_url]
+        subprocess.run(cmd, check=True)
 
     Path(model_dir).mkdir(parents=True, exist_ok=True)
     target_path = Path(model_dir) / filename
@@ -114,7 +101,12 @@ def hf_snapshot_download(
 
 def download_all() -> None:
     for model in models:
-        hf_download(model["repo_id"], model["filename"], model["model_dir"])
+        hf_download(
+            model["repo_id"],
+            model["filename"],
+            model["model_dir"],
+            model.get("save_as"),
+        )
     for model in models_snapshot:
         hf_snapshot_download(model["repo_id"], model["target_dir"])
     for model in models_ext:
@@ -126,7 +118,7 @@ def download_all() -> None:
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .add_local_python_source("models", "plugins", copy=True)
-    .apt_install("git", "git-lfs", "libgl1-mesa-dev", "libglib2.0-0", "aria2")
+    .apt_install("git", "git-lfs", "libgl1-mesa-dev", "libglib2.0-0", "aria2", "wget")
     .pip_install_from_requirements(str(root_dir / "requirements_comfy.txt"))
     .run_commands("comfy --skip-prompt install --nvidia")
     .run_commands("git lfs install")
@@ -154,10 +146,15 @@ else:
         "API endpoint might not work without a workflow."
     )
 
-if comfy_plugins:
-    image = image.run_commands("comfy node install " + " ".join(comfy_plugins))
+# Copy workflows into image so they appear in ComfyUI's workflow browser
+workflows_dir = root_dir / "workflows"
+if workflows_dir.exists():
+    image = image.add_local_dir(
+        str(workflows_dir),
+        "/root/comfy/ComfyUI/user/default/workflows",
+        copy=True,
+    )
 
 
-# ── App ──
 
 app = modal.App(name="modal-comfyui", image=image)

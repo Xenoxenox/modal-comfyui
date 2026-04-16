@@ -17,12 +17,11 @@ plugins.py
 workflow_api.json
 workflows/*.json
 !workflows/.gitkeep
-
-# Output
-output/
+!workflows/newbie-official.json
 
 # Logs
 logs/
+modal_serve.log
 
 # Reference files
 ComfyUI-云端架构构思.md
