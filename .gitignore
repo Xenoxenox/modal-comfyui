@@ -23,5 +23,8 @@ workflows/*.json
 logs/
 modal_serve.log
 
+# Claude hook error relay
+.claude/_last_error.txt
+
 # Reference files
 ComfyUI-云端架构构思.md

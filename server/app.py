@@ -15,6 +15,10 @@ output_vol = modal.Volume.from_name("comfy-output", create_if_missing=True)
 CACHE_MOUNT = "/cache"
 OUTPUT_MOUNT = "/output"
 COMFY_ROOT = "/root/comfy/ComfyUI"
+COMFY_ROOT_PATH = Path(COMFY_ROOT)
+COMFY_DEFAULT_USER_DIR = COMFY_ROOT_PATH / "user" / "default"
+COMFY_WORKFLOWS_DIR = COMFY_DEFAULT_USER_DIR / "workflows"
+WORKFLOW_SEED_DIR = "/root/comfy/workflow-seed"
 
 root_dir = Path(__file__).parent.parent
 
@@ -151,7 +155,7 @@ workflows_dir = root_dir / "workflows"
 if workflows_dir.exists():
     image = image.add_local_dir(
         str(workflows_dir),
-        "/root/comfy/ComfyUI/user/default/workflows",
+        str(WORKFLOW_SEED_DIR),
         copy=True,
     )
 
