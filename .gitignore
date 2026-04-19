@@ -1,3 +1,13 @@
+# OS/Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Env
+.env
+.env.*
+
 # Python-generated files
 __pycache__/
 *.py[oc]
@@ -7,15 +17,14 @@ wheels/
 *.egg-info
 
 # Virtual environments
-.venv
+.venv/
 
 # Models and Custom nodes
 models.py
 plugins.py
 
 # Workflow
-workflow_api.json
-workflows/*.json
+workflows/
 !workflows/.gitkeep
 !workflows/newbie-official.json
 
@@ -23,8 +32,21 @@ workflows/*.json
 logs/
 modal_serve.log
 
+# Tooling
+.claude/
+.firecrawl/
+.roo/
+
 # Claude hook error relay
 .claude/_last_error.txt
+
+
+# Local troubleshooting helpers
+scripts/report_workflow_issue.py
+scripts/run_and_report.py
+
+# Local output
+output/
 
 # Reference files
 ComfyUI-云端架构构思.md

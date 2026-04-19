@@ -11,10 +11,11 @@ Run ComfyUI on Modal with two modes: **Web UI** (browser-based workflow design) 
 ```bash
 uv sync                        # install dependencies (modal + questionary)
 modal setup                    # authenticate with Modal (one-time)
-python serve.py                # dev Web UI — auto-cleans old apps, logs to modal_serve.log
+python serve.py                # dev Web UI — auto-cleans old apps, logs to logs/modal_serve_[timestamp].log
 modal serve server/ui.py       # dev Web UI (manual)
 modal deploy server/ui.py      # production Web UI — persistent endpoint
 python -m client.infer         # headless inference — interactive GPU/workflow selection
+python -m client.watch <url>   # local watcher — download new Web UI outputs into output/
 python -m scripts.manage_volumes  # manage Modal Volumes (list/clean)
 ```
 
@@ -30,6 +31,12 @@ cp plugins.example.py plugins.py
 ```
 
 Optionally place a `workflow_api.json` at the repo root or workflow JSON files in `workflows/`. If `workflow_api.json` is present, the image build automatically installs its required custom nodes via `comfy node install-deps`.
+
+## Local-Only Helper Files
+
+- `scripts/report_workflow_issue.py` and `scripts/run_and_report.py` are local troubleshooting helpers.
+- Do not commit them again; they are now ignored in `.gitignore`.
+- Because they were already committed once, removing them from future pushes requires a later cleanup commit with `git rm --cached`.
 
 ## Modal Secrets Required
 
@@ -62,6 +69,7 @@ python serve.py                   # restart
 modal-comfyui/
 ├── client/              # Local client code (runs on your machine)
 │   ├── infer.py         # Headless inference entry-point (questionary → Modal)
+│   ├── watch.py         # Polls Web UI history/view and downloads new images to local output/
 │   └── utils.py         # Logging, UTF-8 fix, workflow loading, result download
 ├── server/              # Remote code (runs inside Modal containers)
 │   ├── app.py           # Modal App, Image, Volumes, model download functions
@@ -92,7 +100,7 @@ The image is built in layers and cached by Modal:
 2. `apt_install` + `pip_install_from_requirements` (`comfy-cli`, `huggingface_hub`, `wget`)
 3. `comfy --skip-prompt install --nvidia` — installs ComfyUI into the image
 4. `download_all()` runs as a build step against `comfy-cache` — downloads models and symlinks them into ComfyUI model dirs; does **not** copy files
-5. `workflows/` directory is copied into `/root/comfy/ComfyUI/user/default/workflows/` so they appear in ComfyUI's workflow browser
+5. `workflows/` directory is copied into `/root/comfy/workflow-seed/`; `server/app.py` defines this seed mount point and the UI/runtime can consume it from there
 6. If `comfy_plugins` non-empty: `comfy node install` for each plugin ID
 
 ### Model Download System (`models.py`)
@@ -158,9 +166,13 @@ models_ext = [
 - Scales to zero after 60s idle (`scaledown_window`)
 - output_vol is imported but **not yet mounted** — generated images currently stay in the container and are lost on scale-down
 
-### Pending Task
+### Local Output Watcher (`client/watch.py`)
 
-**Wire up output directory:** ComfyUI generated images need to be streamed back to the local machine in real time, without saving to Modal Storage (`comfy-output` volume). The target behavior: every image ComfyUI saves → immediately appears in a local `output/` directory.
+- `output/` is populated by the local watcher, not by `modal serve` itself
+- The watcher polls `GET /history` and downloads images via `GET /view`
+- Run `python -m client.watch <modal-web-ui-url>` when using the Web UI and you want local files under `output/`
+
+
 
 ## Code Patterns
 
