@@ -122,7 +122,7 @@ def download_all() -> None:
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .add_local_python_source("models", "plugins", copy=True)
-    .apt_install("git", "git-lfs", "libgl1-mesa-dev", "libglib2.0-0", "aria2", "wget")
+    .apt_install("git", "git-lfs", "libgl1-mesa-dev", "libglib2.0-0", "aria2", "wget", "nginx")
     .pip_install_from_requirements(str(root_dir / "requirements_comfy.txt"))
     .run_commands("comfy --skip-prompt install --nvidia")
     .run_commands("git lfs install")
@@ -159,6 +159,11 @@ if workflows_dir.exists():
         copy=True,
     )
 
+image = image.add_local_file(
+    str(root_dir / "server" / "nginx.conf"),
+    "/etc/nginx/nginx.conf",
+    copy=True,
+)
 
 
 app = modal.App(name="modal-comfyui", image=image)

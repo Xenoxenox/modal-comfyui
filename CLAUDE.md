@@ -32,11 +32,6 @@ cp plugins.example.py plugins.py
 
 Optionally place a `workflow_api.json` at the repo root or workflow JSON files in `workflows/`. If `workflow_api.json` is present, the image build automatically installs its required custom nodes via `comfy node install-deps`.
 
-## Local-Only Helper Files
-
-- `scripts/report_workflow_issue.py` and `scripts/run_and_report.py` are local troubleshooting helpers.
-- Do not commit them again; they are now ignored in `.gitignore`.
-- Because they were already committed once, removing them from future pushes requires a later cleanup commit with `git rm --cached`.
 
 ## Modal Secrets Required
 
@@ -73,7 +68,8 @@ modal-comfyui/
 │   └── utils.py         # Logging, UTF-8 fix, workflow loading, result download
 ├── server/              # Remote code (runs inside Modal containers)
 │   ├── app.py           # Modal App, Image, Volumes, model download functions
-│   ├── ui.py            # Web UI Function (@modal.web_server)
+│   ├── ui.py            # Web UI Function — starts ComfyUI(:8188) + nginx(:8000)
+│   ├── nginx.conf       # Nginx reverse proxy config (fixes Modal %2F decoding)
 │   ├── generate.py      # Headless inference logic (called via serialized=True)
 │   └── comfy_wrapper.py # ComfyUI subprocess management & HTTP API wrapper
 ├── scripts/
@@ -90,18 +86,19 @@ modal-comfyui/
 | Volume | Mount Point | Contents |
 |--------|------------|----------|
 | `comfy-cache` | `/cache` | HF model cache, external model downloads, custom nodes |
-| `comfy-output` | `/output` | Generated images (currently unused — output not yet wired) |
+| `comfy-output` | `/output` | Deprecated; now generated images are saved to local `./output` via `client/watch.py` |
 
 ### Modal Image Build Pipeline (`server/app.py`)
 
 The image is built in layers and cached by Modal:
 
 1. `debian_slim(python_version="3.11")` — **image uses Python 3.11, but local `pyproject.toml` requires `>=3.13`; this mismatch is intentional.**
-2. `apt_install` + `pip_install_from_requirements` (`comfy-cli`, `huggingface_hub`, `wget`)
+2. `apt_install` + `pip_install_from_requirements` (`comfy-cli`, `huggingface_hub`, `wget`, `nginx`)
 3. `comfy --skip-prompt install --nvidia` — installs ComfyUI into the image
 4. `download_all()` runs as a build step against `comfy-cache` — downloads models and symlinks them into ComfyUI model dirs; does **not** copy files
 5. `workflows/` directory is copied into `/root/comfy/workflow-seed/`; `server/app.py` defines this seed mount point and the UI/runtime can consume it from there
-6. If `comfy_plugins` non-empty: `comfy node install` for each plugin ID
+6. `server/nginx.conf` is copied to `/etc/nginx/nginx.conf` (reverse proxy for `%2F` fix)
+7. If `comfy_plugins` non-empty: `comfy node install` for each plugin ID
 
 ### Model Download System (`models.py`)
 
@@ -161,10 +158,13 @@ models_ext = [
 
 ### Web UI (`server/ui.py`)
 
-- `@modal.web_server(8000)` serving ComfyUI on port 8000 via `comfy launch --background`
+- Request path: `Modal @web_server(8000)` → `nginx(:8000)` → `ComfyUI(:8188)`
+- Nginx reverse proxy re-encodes `%2F` slashes in `/api/userdata/` paths that Modal's edge proxy decoded
+- ComfyUI starts on `127.0.0.1:8188` (internal only), nginx exposes port `8000`
+- `_wait_for_comfyui()` polls `/system_stats` before starting nginx — ensures memory snapshot captures a fully-ready state
+- `_seed_workflows()` copies JSON files from `/root/comfy/workflow-seed/` into `user/default/workflows/` at startup
 - GPU snapshots (`enable_gpu_snapshot`) for faster cold starts — **only works with `modal deploy`, not `modal serve`**
 - Scales to zero after 60s idle (`scaledown_window`)
-- output_vol is imported but **not yet mounted** — generated images currently stay in the container and are lost on scale-down
 
 ### Local Output Watcher (`client/watch.py`)
 

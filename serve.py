@@ -19,7 +19,10 @@ def stop_old_apps():
     )
     for line in result.stdout.splitlines():
         if "ephemeral" in line:
-            app_id = line.split("|")[1].strip()
+            parts = line.split("|")
+            if len(parts) < 2:
+                continue
+            app_id = parts[1].strip()
             if app_id:
                 print(f"Stopping old app: {app_id}")
                 subprocess.run(["modal", "app", "stop", app_id], capture_output=True)
