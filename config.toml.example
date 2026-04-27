@@ -1,0 +1,77 @@
+# ComfyUI Model & Plugin Configuration
+#
+# Copy this file to config.toml and edit:
+#   cp config.toml.example config.toml
+#
+# source types:
+#   "huggingface"          — single file from HF repo (hf_hub_download)
+#   "huggingface_snapshot" — full repo clone (snapshot_download)
+#   "external"             — direct URL download (wget), supports CivitAI
+#
+# model_dir is relative to /root/comfy/ComfyUI/models/
+# valid dirs: checkpoints, clip, clip_vision, controlnet, diffusers,
+#   embeddings, gligen, hypernetworks, loras, photomaker, style_models,
+#   unet, upscale_models, vae, vae_approx
+
+# ── Standalone Models ──
+
+# [models.illustrious-xl]
+# source = "huggingface"
+# repo_id = "OnomaAIResearch/Illustrious-xl-early-release-v0"
+# filename = "Illustrious-XL-v0.1.safetensors"
+# model_dir = "checkpoints"
+
+# ── NewBie Model Bundle ──
+
+# [models.newbie-unet]
+# source = "huggingface"
+# repo_id = "NewBie-image/NewBie-image-Exp0.1"
+# filename = "transformer/diffusion_pytorch_model.safetensors"
+# model_dir = "unet"
+# save_as = "newbie01.safetensors"
+# bundle = "newbie"
+
+# [models.newbie-gemma3]
+# source = "huggingface"
+# repo_id = "NewBie-image/NewBie-image-Exp0.1"
+# filename = "text_encoder/model-00001-of-00002.safetensors"
+# model_dir = "clip"
+# save_as = "gemma3-4b-it.safetensors"
+# bundle = "newbie"
+
+# [models.newbie-jina]
+# source = "huggingface"
+# repo_id = "NewBie-image/NewBie-image-Exp0.1"
+# filename = "text_encoder_2/model.safetensors"
+# model_dir = "clip"
+# save_as = "jina-clip-v2.safetensors"
+# bundle = "newbie"
+
+# [models.newbie-vae]
+# source = "huggingface"
+# repo_id = "NewBie-image/NewBie-image-Exp0.1"
+# filename = "vae/diffusion_pytorch_model.safetensors"
+# model_dir = "vae"
+# bundle = "newbie"
+
+# ── External Models (CivitAI etc.) ──
+
+# [models.newbie-void-lora]
+# source = "external"
+# url = "https://civitai.com/api/download/models/XXXXX"
+# filename = "newbie-void-v1.0.safetensors"
+# model_dir = "loras"
+# bundle = "newbie"
+
+# ── HuggingFace Snapshots (full repo, for Diffusers-format models) ──
+
+# [models.some-diffusers-model]
+# source = "huggingface_snapshot"
+# repo_id = "some/diffusers-model"
+# target_dir = "/root/comfy/ComfyUI/models/diffusers/some-model"
+
+# ── Plugins (ComfyUI custom nodes from registry) ──
+
+# [plugins.comfyui-easy-use]
+# node_id = "comfyui-easy-use"
+# name = "ComfyUI Easy Use"

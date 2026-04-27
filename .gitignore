@@ -26,10 +26,10 @@ plugins.py
 # Workflow
 workflows/
 !workflows/.gitkeep
-!workflows/newbie-official.json
 
 # Logs
 logs/
+!logs/.gitkeep
 modal_serve.log
 
 # Tooling
@@ -50,3 +50,5 @@ output/
 
 # Reference files
 ComfyUI-云端架构构思.md
+
+config.toml

@@ -23,11 +23,10 @@ No test framework or linter is configured in this repo.
 
 ## Before Running Any Modal Command
 
-`server/app.py` hard-imports `models` and `plugins` at the module level. These files are gitignored. Create them from the example templates:
+`server/app.py` reads model and plugin config from `config.toml` (gitignored). Copy the example and edit it:
 
 ```bash
-cp models.example.py models.py
-cp plugins.example.py plugins.py
+cp config.toml.example config.toml
 ```
 
 Optionally place a `workflow_api.json` at the repo root or workflow JSON files in `workflows/`. If `workflow_api.json` is present, the image build automatically installs its required custom nodes via `comfy node install-deps`.
@@ -76,13 +75,16 @@ modal-comfyui/
 │   ├── ui.py            # Web UI Function (@modal.web_server)
 │   ├── generate.py      # Headless inference logic (called via serialized=True)
 │   └── comfy_wrapper.py # ComfyUI subprocess management & HTTP API wrapper
+├── config/              # Config schema and loader (copied into image)
+│   ├── schema.py        # ModelSpec, PluginSpec, Config dataclasses
+│   └── loader.py        # load_config(), save_config(), to_legacy()
 ├── scripts/
 │   └── manage_volumes.py  # Volume listing and cleanup
 ├── serve.py             # Convenience launcher: cleans stuck apps + starts modal serve
 ├── workflows/           # Workflow JSON files (copied into image at build time)
 │   └── newbie-official.json  # NewBie image Exp0.1 official workflow
-├── models.py            # (gitignored) HF + external model config
-├── plugins.py           # (gitignored) Custom node IDs for comfy-cli
+├── config.toml          # (gitignored) Models + plugins config
+├── config.toml.example  # Example config template
 ```
 
 ### Volumes
@@ -99,44 +101,31 @@ The image is built in layers and cached by Modal:
 1. `debian_slim(python_version="3.11")` — **image uses Python 3.11, but local `pyproject.toml` requires `>=3.13`; this mismatch is intentional.**
 2. `apt_install` + `pip_install_from_requirements` (`comfy-cli`, `huggingface_hub`, `wget`)
 3. `comfy --skip-prompt install --nvidia` — installs ComfyUI into the image
-4. `download_all()` runs as a build step against `comfy-cache` — downloads models and symlinks them into ComfyUI model dirs; does **not** copy files
-5. `workflows/` directory is copied into `/root/comfy/workflow-seed/`; `server/app.py` defines this seed mount point and the UI/runtime can consume it from there
-6. If `comfy_plugins` non-empty: `comfy node install` for each plugin ID
+4. `add_local_python_source("config")` + `add_local_file("config.toml")` — config baked in **after** heavy layers so model/plugin changes don't bust apt/pip/comfy cache
+5. `download_all()` runs as a build step against `comfy-cache` — reads `config.toml`, downloads models and symlinks them into ComfyUI model dirs; does **not** copy files
+6. If plugins defined in `config.toml`: `comfy node install` for each plugin ID
+7. `workflows/` directory is copied into `/root/comfy/workflow-seed/`
 
-### Model Download System (`models.py`)
+### Model & Plugin Config (`config.toml`)
 
-Three lists control what gets downloaded during image build:
+All models and plugins are defined in `config.toml` (gitignored, copy from `config.toml.example`):
 
-```python
-models = [
-    # Single-file HF downloads → hf_download()
-    # Supports optional save_as to rename the symlink
-    {
-        "repo_id": "...",
-        "filename": "path/in/repo.safetensors",
-        "model_dir": "/root/comfy/ComfyUI/models/checkpoints",
-        "save_as": "renamed.safetensors",   # optional
-    },
-]
+```toml
+[models.my-checkpoint]
+source = "huggingface"
+repo_id = "org/repo"
+filename = "model.safetensors"
+model_dir = "checkpoints"   # relative to ComfyUI/models/
+save_as = "renamed.safetensors"  # optional
 
-models_snapshot = [
-    # Full repo snapshot → hf_snapshot_download()
-    # For Diffusers-format models (NOT recommended for ComfyUI — causes path issues)
-    {
-        "repo_id": "...",
-        "target_dir": "/root/comfy/ComfyUI/models/newbie/...",
-    },
-]
+[models.my-lora]
+source = "external"
+url = "https://civitai.com/api/download/models/..."
+filename = "my-lora.safetensors"
+model_dir = "loras"
 
-models_ext = [
-    # External URL downloads → download_external_model() via wget
-    # CivitAI: token auto-appended as ?token=... query param
-    {
-        "url": "https://civitai.com/api/download/models/...",
-        "filename": "my-lora.safetensors",
-        "model_dir": "/root/comfy/ComfyUI/models/loras",
-    },
-]
+[plugins.my-nodes]
+node_id = "comfyui-my-nodes"   # or use repo = "https://github.com/..."
 ```
 
 ### Currently Configured Models
