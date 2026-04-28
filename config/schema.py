@@ -48,7 +48,7 @@ class PluginSpec:
     repo: str | None = None
 
 
-@dataclass
+@dataclass(frozen=True)
 class Config:
     models: dict[str, ModelSpec]
     plugins: dict[str, PluginSpec]

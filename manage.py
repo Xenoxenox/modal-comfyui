@@ -103,10 +103,10 @@ def _guess_model_dir(filename: str) -> str:
 # ── Add Model Flows ──
 
 
-def _add_hf_model(cfg: Config) -> Config:
+def _add_hf_model(cfg: Config) -> None:
     raw = questionary.text("HF repo (URL or owner/name):").ask()
     if not raw:
-        return cfg
+        return
 
     repo_id = _parse_hf_input(raw)
     print(f"  Repo: {repo_id}")
@@ -116,19 +116,19 @@ def _add_hf_model(cfg: Config) -> Config:
         model_files = [f for f in files if _is_model_file(f)]
         if not model_files:
             print("  No model files found in repo.")
-            return cfg
+            return
 
         selected = questionary.checkbox(
             "Select files to install:",
             choices=[questionary.Choice(f, value=f) for f in model_files],
         ).ask()
         if not selected:
-            return cfg
+            return
     else:
         print("  Falling back to manual entry.")
         filename = questionary.text("Filename (path in repo):").ask()
         if not filename:
-            return cfg
+            return
         selected = [filename]
 
     bundle = None
@@ -177,17 +177,15 @@ def _add_hf_model(cfg: Config) -> Config:
         display_name = save_as or original_name
         print(f"  + {key}: {repo_id} → {model_dir}/{display_name}")
 
-    return cfg
 
-
-def _add_external_model(cfg: Config) -> Config:
+def _add_external_model(cfg: Config) -> None:
     url = questionary.text("Download URL:").ask()
     if not url:
-        return cfg
+        return
 
     filename = questionary.text("Filename:").ask()
     if not filename:
-        return cfg
+        return
 
     model_dir = questionary.select(
         "Target directory:",
@@ -201,7 +199,7 @@ def _add_external_model(cfg: Config) -> Config:
     key = questionary.text("Config key:", default=default_key).ask()
     if not key or key in cfg.models:
         print(f"  Key '{key}' conflict or empty, skipping.")
-        return cfg
+        return
 
     cfg.models[key] = ModelSpec(
         source=ModelSource.EXTERNAL,
@@ -211,13 +209,12 @@ def _add_external_model(cfg: Config) -> Config:
         bundle=bundle,
     )
     print(f"  + {key}: {url} → {model_dir}/{filename}")
-    return cfg
 
 
-def _add_snapshot_model(cfg: Config) -> Config:
+def _add_snapshot_model(cfg: Config) -> None:
     raw = questionary.text("HF repo (URL or owner/name):").ask()
     if not raw:
-        return cfg
+        return
 
     repo_id = _parse_hf_input(raw)
 
@@ -226,13 +223,13 @@ def _add_snapshot_model(cfg: Config) -> Config:
         default=f"/root/comfy/ComfyUI/models/diffusers/{repo_id.split('/')[-1]}",
     ).ask()
     if not target_dir:
-        return cfg
+        return
 
     default_key = _slugify(repo_id.split("/")[-1])
     key = questionary.text("Config key:", default=default_key).ask()
     if not key or key in cfg.models:
         print(f"  Key '{key}' conflict or empty, skipping.")
-        return cfg
+        return
 
     cfg.models[key] = ModelSpec(
         source=ModelSource.HUGGINGFACE_SNAPSHOT,
@@ -240,7 +237,6 @@ def _add_snapshot_model(cfg: Config) -> Config:
         target_dir=target_dir,
     )
     print(f"  + {key}: snapshot {repo_id} → {target_dir}")
-    return cfg
 
 
 # ── Model Management ──
@@ -278,10 +274,10 @@ def _list_models(cfg: Config) -> None:
     print()
 
 
-def _remove_models(cfg: Config) -> Config:
+def _remove_models(cfg: Config) -> None:
     if not cfg.models:
         print("  No models to remove.")
-        return cfg
+        return
 
     choices = []
     for key, spec in cfg.models.items():
@@ -290,24 +286,22 @@ def _remove_models(cfg: Config) -> Config:
 
     to_remove = questionary.checkbox("Select models to remove:", choices=choices).ask()
     if not to_remove:
-        return cfg
+        return
 
     if not questionary.confirm(
         f"Remove {len(to_remove)} model(s)?", default=False
     ).ask():
-        return cfg
+        return
 
     for key in to_remove:
         del cfg.models[key]
         print(f"  - {key}")
 
-    return cfg
-
 
 # ── Plugin Management ──
 
 
-def _add_plugin(cfg: Config) -> Config:
+def _add_plugin(cfg: Config) -> None:
     source = questionary.select(
         "Plugin source:",
         choices=["ComfyUI Registry (node ID)", "GitHub repo URL"],
@@ -316,7 +310,7 @@ def _add_plugin(cfg: Config) -> Config:
     if source == "ComfyUI Registry (node ID)":
         node_id = questionary.text("Node ID:").ask()
         if not node_id:
-            return cfg
+            return
         name = questionary.text("Display name (optional):").ask() or None
         key = _slugify(node_id)
         cfg.plugins[key] = PluginSpec(node_id=node_id, name=name)
@@ -324,7 +318,7 @@ def _add_plugin(cfg: Config) -> Config:
     else:
         repo_url = questionary.text("GitHub repo URL:").ask()
         if not repo_url:
-            return cfg
+            return
         repo_url = repo_url.strip().rstrip("/")
         # Derive key from last two path segments (owner/repo)
         parts = repo_url.rstrip("/").split("/")
@@ -333,14 +327,12 @@ def _add_plugin(cfg: Config) -> Config:
         name = questionary.text("Display name (optional):").ask() or None
         key = questionary.text("Config key:", default=default_key).ask()
         if not key:
-            return cfg
+            return
         if key in cfg.plugins:
             print(f"  Key '{key}' already exists, skipping.")
-            return cfg
+            return
         cfg.plugins[key] = PluginSpec(repo=repo_url, name=name)
         print(f"  + {key}: {repo_url}")
-
-    return cfg
 
 
 def _list_plugins(cfg: Config) -> None:
@@ -358,10 +350,10 @@ def _list_plugins(cfg: Config) -> None:
     print()
 
 
-def _remove_plugins(cfg: Config) -> Config:
+def _remove_plugins(cfg: Config) -> None:
     if not cfg.plugins:
         print("  No plugins to remove.")
-        return cfg
+        return
 
     choices = [
         questionary.Choice(f"{key} ({spec.repo or spec.node_id})", value=key)
@@ -369,18 +361,16 @@ def _remove_plugins(cfg: Config) -> Config:
     ]
     to_remove = questionary.checkbox("Select plugins to remove:", choices=choices).ask()
     if not to_remove:
-        return cfg
+        return
 
     if not questionary.confirm(
         f"Remove {len(to_remove)} plugin(s)?", default=False
     ).ask():
-        return cfg
+        return
 
     for key in to_remove:
         del cfg.plugins[key]
         print(f"  - {key}")
-
-    return cfg
 
 
 # ── Deploy ──
@@ -410,7 +400,7 @@ def _deploy(cfg: Config) -> None:
 # ── Main Menu ──
 
 
-def _models_menu(cfg: Config) -> Config:
+def _models_menu(cfg: Config) -> None:
     while True:
         action = questionary.select(
             "Model action:",
@@ -427,22 +417,20 @@ def _models_menu(cfg: Config) -> Config:
         if not action or action == "Back":
             break
         elif "HuggingFace" in action:
-            cfg = _add_hf_model(cfg)
+            _add_hf_model(cfg)
         elif "External" in action:
-            cfg = _add_external_model(cfg)
+            _add_external_model(cfg)
         elif "Snapshot" in action:
-            cfg = _add_snapshot_model(cfg)
+            _add_snapshot_model(cfg)
         elif "List" in action:
             _list_models(cfg)
         elif "Remove" in action:
-            cfg = _remove_models(cfg)
+            _remove_models(cfg)
 
         save_config(cfg, CONFIG_PATH)
 
-    return cfg
 
-
-def _plugins_menu(cfg: Config) -> Config:
+def _plugins_menu(cfg: Config) -> None:
     while True:
         action = questionary.select(
             "Plugin action:",
@@ -452,15 +440,13 @@ def _plugins_menu(cfg: Config) -> Config:
         if not action or action == "Back":
             break
         elif "Add" in action:
-            cfg = _add_plugin(cfg)
+            _add_plugin(cfg)
         elif "List" in action:
             _list_plugins(cfg)
         elif "Remove" in action:
-            cfg = _remove_plugins(cfg)
+            _remove_plugins(cfg)
 
         save_config(cfg, CONFIG_PATH)
-
-    return cfg
 
 
 def main() -> None:
@@ -490,9 +476,9 @@ def main() -> None:
         if not choice or choice == "Exit":
             break
         elif choice == "Manage models":
-            cfg = _models_menu(cfg)
+            _models_menu(cfg)
         elif choice == "Manage plugins":
-            cfg = _plugins_menu(cfg)
+            _plugins_menu(cfg)
         elif choice == "Deploy to Modal":
             _deploy(cfg)
 
