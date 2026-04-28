@@ -5,9 +5,6 @@ from pathlib import Path
 
 import modal
 
-from models import models, models_ext, models_snapshot
-from plugins import comfy_plugins
-
 # ── Volumes ──
 cache_vol = modal.Volume.from_name("comfy-cache", create_if_missing=True)
 output_vol = modal.Volume.from_name("comfy-output", create_if_missing=True)
@@ -19,6 +16,7 @@ COMFY_ROOT_PATH = Path(COMFY_ROOT)
 COMFY_DEFAULT_USER_DIR = COMFY_ROOT_PATH / "user" / "default"
 COMFY_WORKFLOWS_DIR = COMFY_DEFAULT_USER_DIR / "workflows"
 WORKFLOW_SEED_DIR = "/root/comfy/workflow-seed"
+CONFIG_PATH = "/root/config.toml"
 
 root_dir = Path(__file__).parent.parent
 
@@ -104,6 +102,12 @@ def hf_snapshot_download(
 
 
 def download_all() -> None:
+    from config.loader import load_config, to_legacy
+    from pathlib import Path
+
+    cfg = load_config(Path(CONFIG_PATH))
+    models, models_snapshot, models_ext, _ = to_legacy(cfg)
+
     for model in models:
         hf_download(
             model["repo_id"],
@@ -117,15 +121,27 @@ def download_all() -> None:
         download_external_model(model["url"], model["filename"], model["model_dir"])
 
 
+# ── Read config for build-time plugin list ──
+def _get_plugins() -> list[str]:
+    try:
+        from config.loader import load_config, to_legacy
+        cfg = load_config(root_dir / "config.toml")
+        _, _, _, plugins = to_legacy(cfg)
+        return plugins
+    except Exception:
+        return []
+
+
 # ── Image Build ──
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
-    .add_local_python_source("models", "plugins", copy=True)
     .apt_install("git", "git-lfs", "libgl1-mesa-dev", "libglib2.0-0", "aria2", "wget")
     .pip_install_from_requirements(str(root_dir / "requirements_comfy.txt"))
     .run_commands("comfy --skip-prompt install --nvidia")
     .run_commands("git lfs install")
+    .add_local_python_source("config", copy=True)
+    .add_local_file(str(root_dir / "config.toml"), CONFIG_PATH, copy=True)
 )
 
 image = image.env({"HF_HUB_ENABLE_HF_TRANSFER": "1"}).run_function(
@@ -137,7 +153,11 @@ image = image.env({"HF_HUB_ENABLE_HF_TRANSFER": "1"}).run_function(
     ],
 )
 
-# Setup custom nodes
+# Install custom nodes from config
+for _plugin_id in _get_plugins():
+    image = image.run_commands(f"comfy node install {_plugin_id}")
+
+# Setup custom nodes from workflow deps
 workflow_file_path = root_dir / "workflow_api.json"
 if workflow_file_path.exists():
     image = (
@@ -158,7 +178,6 @@ if workflows_dir.exists():
         str(WORKFLOW_SEED_DIR),
         copy=True,
     )
-
 
 
 app = modal.App(name="modal-comfyui", image=image)
