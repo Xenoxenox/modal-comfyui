@@ -6,6 +6,7 @@ Usage:
 """
 from __future__ import annotations
 
+import dataclasses
 import re
 import subprocess
 import sys
@@ -298,6 +299,67 @@ def _remove_models(cfg: Config) -> None:
         print(f"  - {key}")
 
 
+def _manage_bundles(cfg: Config) -> None:
+    if not cfg.models:
+        print("  No models configured.")
+        return
+
+    bundles: dict[str | None, list[str]] = defaultdict(list)
+    for key, spec in cfg.models.items():
+        bundles[spec.bundle].append(key)
+
+    existing_names = sorted(n for n in bundles if n)
+
+    # Show current state
+    print()
+    for name in existing_names:
+        print(f"  Bundle: {name} ({len(bundles[name])} models)")
+    if None in bundles:
+        keys = bundles[None]
+        print(f"  Standalone ({len(keys)}): {', '.join(keys)}")
+    print()
+
+    # Select models to reassign
+    choices = []
+    for key, spec in cfg.models.items():
+        label = f"[{spec.bundle}] {key}" if spec.bundle else key
+        choices.append(questionary.Choice(label, value=key))
+
+    selected = questionary.checkbox(
+        "Select models to assign/move:",
+        choices=choices,
+    ).ask()
+    if not selected:
+        return
+
+    # Choose destination
+    dest_choices = [
+        *existing_names,
+        questionary.Separator(),
+        "(new bundle)",
+        "(standalone)",
+    ]
+    dest = questionary.select(
+        "Target bundle:",
+        choices=dest_choices,
+    ).ask()
+    if not dest:
+        return
+
+    if dest == "(new bundle)":
+        dest = questionary.text("New bundle name:").ask()
+        if not dest:
+            return
+    elif dest == "(standalone)":
+        dest = None
+
+    for key in selected:
+        old = cfg.models[key]
+        cfg.models[key] = dataclasses.replace(old, bundle=dest)
+        label = dest or "(standalone)"
+        print(f"  {key} → {label}")
+
+
 # ── Plugin Management ──
 
 
@@ -409,6 +471,7 @@ def _models_menu(cfg: Config) -> None:
                 "Add model (CivitAI / External URL)",
                 "Add model (HF Snapshot)",
                 "List models",
+                "Manage bundles",
                 "Remove model",
                 "Back",
             ],
@@ -424,6 +487,8 @@ def _models_menu(cfg: Config) -> None:
             _add_snapshot_model(cfg)
         elif "List" in action:
             _list_models(cfg)
+        elif "Manage bundles" in action:
+            _manage_bundles(cfg)
         elif "Remove" in action:
             _remove_models(cfg)
 
