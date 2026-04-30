@@ -67,7 +67,7 @@ def _hf_list_files(repo_id: str) -> list[str] | None:
         return None
 
 
-_MODEL_EXTENSIONS = {".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf"}
+_MODEL_EXTENSIONS = {".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf", ".onnx"}
 
 
 def _is_model_file(filename: str) -> bool:
@@ -88,6 +88,12 @@ def _guess_model_dir(filename: str) -> str:
         "controlnet": "controlnet",
         "embedding": "embeddings",
         "upscale": "upscale_models",
+        "inswapper": "insightface",
+        "insightface": "insightface",
+        "facerestore": "facerestore_models",
+        "face_restore": "facerestore_models",
+        "gfpgan": "facerestore_models",
+        "codeformer": "facerestore_models",
     }
     for part in path_parts:
         for hint, dir_name in dir_hints.items():
@@ -154,10 +160,10 @@ def _add_hf_model(cfg: Config) -> None:
         ).ask()
         save_as = save_as_input or None
 
+        name_for_key = save_as or original_name
+        name_for_key = Path(name_for_key).stem  # strip extension for key
         default_key = _slugify(
-            f"{repo_id.split('/')[-1]}-{save_as or original_name}".removesuffix(
-                ".safetensors"
-            )
+            f"{repo_id.split('/')[-1]}-{name_for_key}"
         )
         key = questionary.text("Config key:", default=default_key).ask()
         if not key:
@@ -196,7 +202,7 @@ def _add_external_model(cfg: Config) -> None:
 
     bundle = questionary.text("Bundle name (optional):").ask() or None
 
-    default_key = _slugify(filename.removesuffix(".safetensors"))
+    default_key = _slugify(Path(filename).stem)
     key = questionary.text("Config key:", default=default_key).ask()
     if not key or key in cfg.models:
         print(f"  Key '{key}' conflict or empty, skipping.")
