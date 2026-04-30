@@ -13,6 +13,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+import requests
+
 try:
     import questionary
 except ImportError:
@@ -107,6 +109,76 @@ def _guess_model_dir(filename: str) -> str:
     return "checkpoints"
 
 
+# ── CivitAI URL Resolution ──
+
+_CIVITAI_PAGE_RE = re.compile(r"civitai\.com/models/(\d+)")
+_CIVITAI_API = "https://civitai.com/api/v1/models"
+
+_CIVITAI_TROUBLESHOOT = """\
+CivitAI API request failed. Common issues:
+  1. Missing API key — add CIVITAI_API=<your-key> to .env at repo root
+     Get your key: https://civitai.com/user/account → API Keys
+  2. Network blocked — set proxy env vars before running:
+       export HTTP_PROXY=http://127.0.0.1:<port>
+       export HTTPS_PROXY=http://127.0.0.1:<port>
+     CivitAI is blocked in mainland China without a proxy."""
+
+
+def _load_civitai_key() -> str | None:
+    env_path = Path(__file__).parent / ".env"
+    if not env_path.exists():
+        return None
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("CIVITAI_API="):
+            return line.split("=", 1)[1].strip()
+    return None
+
+
+def _resolve_civitai_url(url: str) -> tuple[str, str] | None:
+    """Resolve a CivitAI page URL to (download_url, filename). Returns None if not applicable."""
+    if "civitai.com/api/download/" in url:
+        return None  # already a download URL
+
+    m = _CIVITAI_PAGE_RE.search(url)
+    if not m:
+        return None  # not a CivitAI URL
+
+    model_id = m.group(1)
+    api_key = _load_civitai_key()
+    if not api_key:
+        print("  " + _CIVITAI_TROUBLESHOOT.replace("\n", "\n  "))
+        return None
+
+    try:
+        resp = requests.get(
+            f"{_CIVITAI_API}/{model_id}",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        print(f"  CivitAI API error: {e}")
+        print("  " + _CIVITAI_TROUBLESHOOT.replace("\n", "\n  "))
+        return None
+
+    data = resp.json()
+    versions = data.get("modelVersions")
+    if not versions:
+        print(f"  CivitAI model {model_id} has no versions.")
+        return None
+
+    ver = versions[0]  # latest version
+    download_url = ver.get("downloadUrl")
+    files = ver.get("files", [])
+    filename = files[0]["name"] if files else None
+
+    if not download_url or not filename:
+        print(f"  CivitAI model {model_id}: missing download URL or filename.")
+        return None
+
+    return download_url, filename
+
+
 # ── Add Model Flows ──
 
 
@@ -190,7 +262,13 @@ def _add_external_model(cfg: Config) -> None:
     if not url:
         return
 
-    filename = questionary.text("Filename:").ask()
+    resolved = _resolve_civitai_url(url)
+    if resolved:
+        url, default_filename = resolved
+        print(f"  Resolved: {url}")
+        filename = questionary.text("Filename:", default=default_filename).ask()
+    else:
+        filename = questionary.text("Filename:").ask()
     if not filename:
         return
 
