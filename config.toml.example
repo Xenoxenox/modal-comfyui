@@ -7,6 +7,7 @@
 #   "huggingface"          — single file from HF repo (hf_hub_download)
 #   "huggingface_snapshot" — full repo clone (snapshot_download)
 #   "external"             — direct URL download (wget), supports CivitAI
+#   "local"                — already uploaded into comfy-cache by the TUI
 #
 # model_dir is relative to /root/comfy/ComfyUI/models/
 # valid dirs: checkpoints, clip, clip_vision, controlnet, diffusers,
@@ -62,6 +63,14 @@
 # filename = "newbie-void-v1.0.safetensors"
 # model_dir = "loras"
 # bundle = "newbie"
+
+# ── Local uploads (created by python manage.py) ──
+
+# [models.local-lora]
+# source = "local"
+# filename = "local-models/loras/my-lora.safetensors"
+# model_dir = "loras"
+# save_as = "my-lora.safetensors"
 
 # ── HuggingFace Snapshots (full repo, for Diffusers-format models) ──
 

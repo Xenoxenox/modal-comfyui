@@ -11,7 +11,7 @@ import re
 import subprocess
 import sys
 from collections import defaultdict
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import requests
 
@@ -50,6 +50,8 @@ STYLE = Style([
 
 CONFIG_PATH = Path(__file__).parent / "config.toml"
 EXAMPLE_PATH = Path(__file__).parent / "config.toml.example"
+CACHE_VOLUME = "comfy-cache"
+LOCAL_MODEL_CACHE_DIR = PurePosixPath("local-models")
 
 
 def _ensure_config() -> Config:
@@ -64,6 +66,48 @@ def _ensure_config() -> Config:
 
 def _slugify(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+
+
+def _rel_to_volume_path(path: PurePosixPath) -> str:
+    posix = path.as_posix()
+    if not posix.startswith("/"):
+        posix = "/" + posix
+    return posix
+
+
+def _normalise_cache_filename(filename: str) -> str:
+    path = PurePosixPath(filename.strip().replace("\\", "/"))
+    if path.is_absolute() or ".." in path.parts:
+        raise ValueError("remote filename must be a relative path inside comfy-cache")
+    return path.as_posix()
+
+
+def _parse_local_path(raw_path: str) -> Path:
+    return Path(raw_path.strip().strip("\"'")).expanduser()
+
+
+def _upload_to_cache(local_path: Path, cache_filename: str) -> bool:
+    try:
+        import modal
+    except ImportError:
+        print(f"  {R}modal is required. Run: uv sync{RST}")
+        return False
+
+    remote_rel = PurePosixPath(cache_filename)
+    print(
+        f"  {D}Uploading to Modal Volume {W}{CACHE_VOLUME}{RST}{D}: "
+        f"{remote_rel.as_posix()}{RST}"
+    )
+    try:
+        volume = modal.Volume.from_name(CACHE_VOLUME, create_if_missing=True)
+        with volume.batch_upload(force=True) as batch:
+            batch.put_file(str(local_path), _rel_to_volume_path(remote_rel))
+    except Exception as e:
+        print(f"  {R}Upload failed:{RST} {e}")
+        return False
+
+    print(f"  {G}Uploaded.{RST}")
+    return True
 
 
 # ── HuggingFace Auto-Detect ──
@@ -325,6 +369,88 @@ def _add_external_model(cfg: Config) -> None:
     print(f"  {G}+{RST} {W}{key}{RST}: {D}{url} → {model_dir}/{filename}{RST}")
 
 
+def _add_local_model(cfg: Config) -> None:
+    raw_path = questionary.path(
+        "Local model file:",
+        style=STYLE,
+    ).ask()
+    if not raw_path:
+        return
+
+    local_path = _parse_local_path(raw_path)
+    if not local_path.exists() or not local_path.is_file():
+        print(f"  {R}File not found:{RST} {local_path}")
+        return
+    if not _is_model_file(local_path.name):
+        print(f"  {R}Unsupported model file extension:{RST} {local_path.suffix}")
+        return
+
+    model_dir = questionary.select(
+        "Target directory:",
+        choices=VALID_MODEL_DIRS,
+        default=_guess_model_dir(local_path.name),
+        style=STYLE,
+    ).ask()
+    if not model_dir:
+        return
+
+    save_as_input = questionary.text(
+        f"Save as in ComfyUI (blank = '{local_path.name}'):",
+        default="",
+        style=STYLE,
+    ).ask()
+    save_as = save_as_input or None
+    display_name = save_as or local_path.name
+
+    default_cache_filename = (
+        LOCAL_MODEL_CACHE_DIR / model_dir / Path(display_name).name
+    ).as_posix()
+    cache_filename_input = questionary.text(
+        "Cache path in comfy-cache:",
+        default=default_cache_filename,
+        style=STYLE,
+    ).ask()
+    if not cache_filename_input:
+        return
+
+    try:
+        cache_filename = _normalise_cache_filename(cache_filename_input)
+    except ValueError as e:
+        print(f"  {R}Invalid cache path:{RST} {e}")
+        return
+
+    bundle = questionary.text("Bundle name (optional):", style=STYLE).ask() or None
+
+    default_key = _slugify(Path(display_name).stem)
+    key = questionary.text("Config key:", default=default_key, style=STYLE).ask()
+    if not key or key in cfg.models:
+        print(f"  {R}Key '{key}' conflict or empty, skipping.{RST}")
+        return
+
+    print(
+        f"\n  {D}Source:{RST} {W}{local_path}{RST}"
+        f"\n  {D}Target:{RST} {W}{model_dir}/{display_name}{RST}"
+        f"\n  {D}Cache:{RST}  {W}{cache_filename}{RST}\n"
+    )
+    if not questionary.confirm("Upload now?", default=True, style=STYLE).ask():
+        return
+
+    if not _upload_to_cache(local_path, cache_filename):
+        return
+
+    cfg.models[key] = ModelSpec(
+        source=ModelSource.LOCAL,
+        filename=cache_filename,
+        model_dir=model_dir,
+        save_as=save_as,
+        bundle=bundle,
+    )
+    print(
+        f"  {G}+{RST} {W}{key}{RST}: "
+        f"{D}{CACHE_VOLUME}/{cache_filename} → {model_dir}/{display_name}{RST}"
+    )
+
+
 def _add_snapshot_model(cfg: Config) -> None:
     raw = questionary.text("HF repo (URL or owner/name):", style=STYLE).ask()
     if not raw:
@@ -386,6 +512,9 @@ def _list_models(cfg: Config) -> None:
             elif spec.source == ModelSource.EXTERNAL:
                 target = f"{spec.model_dir}/{spec.filename}"
                 print(f"    {W}{key:<25}{RST} {G0}EX{RST}  {D}{spec.url[:40]}...{RST}  {G0}→{RST} {D}{target}{RST}")
+            elif spec.source == ModelSource.LOCAL:
+                target = f"{spec.model_dir}/{spec.save_as or Path(spec.filename).name}"
+                print(f"    {W}{key:<25}{RST} {G0}LO{RST}  {D}{CACHE_VOLUME}/{spec.filename}{RST}  {G0}→{RST} {D}{target}{RST}")
     print()
 
 
@@ -587,6 +716,7 @@ def _models_menu(cfg: Config) -> None:
             choices=[
                 "Add model (HuggingFace)",
                 "Add model (CivitAI / External URL)",
+                "Add model (Local upload)",
                 "Add model (HF Snapshot)",
                 "List models",
                 "Manage bundles",
@@ -602,6 +732,8 @@ def _models_menu(cfg: Config) -> None:
             _add_hf_model(cfg)
         elif "External" in action:
             _add_external_model(cfg)
+        elif "Local upload" in action:
+            _add_local_model(cfg)
         elif "Snapshot" in action:
             _add_snapshot_model(cfg)
         elif "List" in action:

@@ -79,6 +79,24 @@ def download_external_model(url: str, filename: str, model_dir: str) -> None:
     print(f"Linked {filename} to {model_dir}/{filename}")
 
 
+def link_local_model(filename: str, model_dir: str, save_as: str | None = None) -> None:
+    cached_path = Path(CACHE_MOUNT) / filename
+    if not cached_path.exists():
+        raise FileNotFoundError(
+            f"Local model is not uploaded in comfy-cache: {cached_path}"
+        )
+
+    Path(model_dir).mkdir(parents=True, exist_ok=True)
+    link_name = save_as if save_as else Path(filename).name
+    target_path = Path(model_dir) / link_name
+
+    if target_path.exists() or target_path.is_symlink():
+        target_path.unlink()
+
+    target_path.symlink_to(cached_path)
+    print(f"Linked local model {filename} to {target_path}")
+
+
 def hf_snapshot_download(
     repo_id: str,
     target_dir: str,
@@ -106,7 +124,7 @@ def download_all() -> None:
     from pathlib import Path
 
     cfg = load_config(Path(CONFIG_PATH))
-    models, models_snapshot, models_ext, _ = to_legacy(cfg)
+    models, models_snapshot, models_ext, models_local, _ = to_legacy(cfg)
 
     for model in models:
         hf_download(
@@ -119,6 +137,12 @@ def download_all() -> None:
         hf_snapshot_download(model["repo_id"], model["target_dir"])
     for model in models_ext:
         download_external_model(model["url"], model["filename"], model["model_dir"])
+    for model in models_local:
+        link_local_model(
+            model["filename"],
+            model["model_dir"],
+            model.get("save_as"),
+        )
 
 
 # ── Read config for build-time plugin list ──
@@ -126,7 +150,7 @@ def _get_plugins() -> list[str]:
     try:
         from config.loader import load_config, to_legacy
         cfg = load_config(root_dir / "config.toml")
-        _, _, _, plugins = to_legacy(cfg)
+        _, _, _, _, plugins = to_legacy(cfg)
         return plugins
     except Exception:
         return []

@@ -53,6 +53,16 @@ def _validate_model(key: str, spec: ModelSpec) -> None:
             raise ConfigError(
                 f"models.{key}: source=external requires {', '.join(missing)}"
             )
+    elif spec.source == ModelSource.LOCAL:
+        missing = []
+        if not spec.filename:
+            missing.append("filename")
+        if not spec.model_dir:
+            missing.append("model_dir")
+        if missing:
+            raise ConfigError(
+                f"models.{key}: source=local requires {', '.join(missing)}"
+            )
 
     if spec.model_dir and spec.model_dir not in VALID_MODEL_DIRS:
         if not spec.model_dir.startswith("/"):
@@ -187,10 +197,11 @@ def save_config(config: Config, path: Path | None = None) -> None:
 
 def to_legacy(
     config: Config,
-) -> tuple[list[dict], list[dict], list[dict], list[str]]:
+) -> tuple[list[dict], list[dict], list[dict], list[dict], list[str]]:
     models: list[dict] = []
     models_snapshot: list[dict] = []
     models_ext: list[dict] = []
+    models_local: list[dict] = []
     comfy_plugins: list[str] = []
 
     for spec in config.models.values():
@@ -214,10 +225,18 @@ def to_legacy(
                 "filename": spec.filename,
                 "model_dir": f"{COMFY_ROOT}/models/{spec.model_dir}",
             })
+        elif spec.source == ModelSource.LOCAL:
+            entry = {
+                "filename": spec.filename,
+                "model_dir": f"{COMFY_ROOT}/models/{spec.model_dir}",
+            }
+            if spec.save_as:
+                entry["save_as"] = spec.save_as
+            models_local.append(entry)
 
     for spec in config.plugins.values():
         install_id = spec.repo or spec.node_id
         if install_id:
             comfy_plugins.append(install_id)
 
-    return models, models_snapshot, models_ext, comfy_plugins
+    return models, models_snapshot, models_ext, models_local, comfy_plugins

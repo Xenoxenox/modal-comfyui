@@ -8,6 +8,7 @@ class ModelSource(str, Enum):
     HUGGINGFACE = "huggingface"
     HUGGINGFACE_SNAPSHOT = "huggingface_snapshot"
     EXTERNAL = "external"
+    LOCAL = "local"
 
 
 VALID_MODEL_DIRS = [
