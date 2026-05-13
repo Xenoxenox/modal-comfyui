@@ -197,7 +197,7 @@ def ask_confirm(
         default=default,
         instruction=instruction,
         style=STYLE,
-        auto_enter=False,
+        auto_enter=True,
     ).ask()
     if answer is None:
         raise KeyboardInterrupt
