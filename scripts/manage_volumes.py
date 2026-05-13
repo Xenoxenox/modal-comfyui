@@ -5,7 +5,6 @@ Usage:
     python -m scripts.manage_volumes list
     python -m scripts.manage_volumes list --volume comfy-cache --path /
     python -m scripts.manage_volumes list --volume comfy-cache --refresh-usage
-    python -m scripts.manage_volumes list --volume comfy-cache --refresh-model-sizes
 """
 
 from __future__ import annotations
@@ -49,6 +48,7 @@ MODEL_LINK_MANIFEST = "/.modal-comfyui-model-links.json"
 FREE_TIER_REFERENCE_BYTES = 1024**4
 USAGE_CACHE_PATH = Path(".cache") / "modal-comfyui" / "volume_usage.json"
 MODEL_SIZE_CACHE_PATH = Path(".cache") / "modal-comfyui" / "model_file_sizes.json"
+DELETED_MODEL_CACHE_PATH = Path(".cache") / "modal-comfyui" / "deleted_model_files.json"
 
 SOURCE_BADGES = {
     "huggingface": "[white on blue] HU [/]",
@@ -221,22 +221,78 @@ def _write_model_size_cache(cache: dict[str, Any]) -> None:
     MODEL_SIZE_CACHE_PATH.write_text(json.dumps(cache, indent=2), encoding="utf-8")
 
 
-def refresh_prepared_model_size_cache() -> dict[str, int]:
-    from server.app import app, inspect_prepared_model_files
+def _read_deleted_model_cache() -> set[str]:
+    try:
+        raw = json.loads(DELETED_MODEL_CACHE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    if not isinstance(raw, list):
+        return set()
+    return {item for item in raw if isinstance(item, str)}
 
+
+def _write_deleted_model_cache(items: set[str]) -> None:
+    DELETED_MODEL_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    DELETED_MODEL_CACHE_PATH.write_text(
+        json.dumps(sorted(items), indent=2),
+        encoding="utf-8",
+    )
+
+
+def _mark_deleted_model_files(cache_paths: list[str]) -> None:
+    deleted = _read_deleted_model_cache()
+    deleted.update(cache_paths)
+    _write_deleted_model_cache(deleted)
+
+
+def _save_model_sizes_from_volume_scan(sizes_by_volume_path: dict[str, int]) -> None:
+    if not sizes_by_volume_path:
+        return
+    try:
+        prepared = list_prepared_model_files(include_sizes=False)
+    except Exception:
+        return
     sizes: dict[str, int] = {}
-    with app.run():
-        items = inspect_prepared_model_files.remote()
-    for item in items:
-        cache_path = str(item.get("cache_path", ""))
-        size = item.get("size")
-        if cache_path and isinstance(size, int):
-            sizes[cache_path] = size
+    for item in prepared:
+        volume_path = _cache_to_volume_path(item.cache_path)
+        size = sizes_by_volume_path.get(volume_path)
+        if size is not None:
+            sizes[item.cache_path] = size
+    if not sizes:
+        return
+    deleted = _read_deleted_model_cache()
+    if deleted:
+        deleted.difference_update(sizes)
+        _write_deleted_model_cache(deleted)
+    existing = _read_model_size_cache()
+    merged = {
+        key: value
+        for key, value in existing.get("sizes", {}).items()
+        if isinstance(key, str) and isinstance(value, int)
+    }
+    merged.update(sizes)
     _write_model_size_cache({
         "refreshed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "sizes": sizes,
+        "sizes": merged,
     })
-    return sizes
+
+
+def forget_cached_model_files(cache_paths: list[str]) -> None:
+    if not cache_paths:
+        return
+    remove_set = set(cache_paths)
+    cache = _read_model_size_cache()
+    sizes = cache.get("sizes", {})
+    if isinstance(sizes, dict):
+        cache["sizes"] = {
+            key: value
+            for key, value in sizes.items()
+            if key not in remove_set
+        }
+        _write_model_size_cache(cache)
+    usage_cache = _read_usage_cache()
+    usage_cache.pop(_usage_cache_key(CACHE_VOLUME, "/"), None)
+    _write_usage_cache(usage_cache)
 
 
 def _cached_model_sizes() -> dict[str, int]:
@@ -253,20 +309,20 @@ def _cached_model_sizes() -> dict[str, int]:
 def list_prepared_model_files(
     *,
     include_sizes: bool = True,
-    refresh_sizes: bool = False,
 ) -> list[PreparedModelFile]:
     items = _load_model_manifest()
-    cached_sizes = refresh_prepared_model_size_cache() if refresh_sizes else _cached_model_sizes()
+    cached_sizes = _cached_model_sizes()
+    deleted = _read_deleted_model_cache()
     result: list[PreparedModelFile] = []
     for item in items:
         cache_path = str(item.get("cache_path", ""))
+        if cache_path in deleted:
+            continue
         target_path = str(item.get("target_path", ""))
         model_dir, name = _model_dir_from_target(target_path)
         size = None
         if include_sizes and cache_path:
             size = cached_sizes.get(cache_path)
-            if size is None and refresh_sizes:
-                size = _volume_file_size(CACHE_VOLUME, _cache_to_volume_path(cache_path))
         result.append(
             PreparedModelFile(
                 source=str(item.get("source", "")),
@@ -280,10 +336,10 @@ def list_prepared_model_files(
     return result
 
 
-def print_model_link_tree(*, refresh_sizes: bool = False) -> bool:
+def print_model_link_tree() -> bool:
     """Print prepared model links grouped by ComfyUI model directory."""
     try:
-        items = list_prepared_model_files(include_sizes=True, refresh_sizes=refresh_sizes)
+        items = list_prepared_model_files(include_sizes=True)
     except Exception:
         return False
 
@@ -319,7 +375,13 @@ def remove_volume_model_files(cache_paths: list[str]) -> tuple[list[str], list[t
             vol.remove_file(volume_path, recursive=False)
             removed.append(cache_path)
         except Exception as exc:
+            if "No such file or directory" in str(exc):
+                removed.append(cache_path)
+                continue
             failed.append((cache_path, str(exc)))
+    if removed:
+        forget_cached_model_files(removed)
+        _mark_deleted_model_files(removed)
     return removed, failed
 
 
@@ -361,6 +423,7 @@ def calculate_volume_usage(
     file_count = 0
     dir_count = 0
     errors: list[str] = []
+    sizes_by_volume_path: dict[str, int] = {}
     stack = [path]
 
     while stack:
@@ -378,10 +441,15 @@ def calculate_volume_usage(
                     stack.append(_join_volume_path(current, entry.path))
                 continue
             file_count += 1
-            total_size += entry.size or 0
+            size = entry.size or 0
+            total_size += size
+            sizes_by_volume_path[_join_volume_path(current, entry.path)] = size
 
         if not recursive:
             break
+
+    if volume_name == CACHE_VOLUME and recursive:
+        _save_model_sizes_from_volume_scan(sizes_by_volume_path)
 
     return VolumeUsage(
         total_size=total_size,
@@ -459,7 +527,6 @@ def print_volume_contents(
     path: str = "/",
     *,
     refresh_usage: bool = False,
-    refresh_model_sizes: bool = False,
 ) -> None:
     """List contents of a Modal Volume with a readable table."""
     print_result_panel(
@@ -510,11 +577,7 @@ def print_volume_contents(
             border_style="yellow",
         )
 
-    if (
-        volume_name == CACHE_VOLUME
-        and path == "/"
-        and print_model_link_tree(refresh_sizes=refresh_model_sizes)
-    ):
+    if volume_name == CACHE_VOLUME and path == "/" and print_model_link_tree():
         return
 
     root = Tree(f"[bold blue]{volume_name}:{path}[/]")
@@ -631,11 +694,6 @@ def volume_management_menu() -> None:
                     description="Run recursive usage scan and cache the result.",
                 ),
                 questionary.Choice(
-                    "Refresh comfy-cache model file sizes",
-                    value=("refresh-model-sizes", CACHE_VOLUME),
-                    description="Resolve symlink target sizes for the model tree.",
-                ),
-                questionary.Choice(
                     "List comfy-output",
                     value=("list", OUTPUT_VOLUME),
                     description="Output tree using cached recursive usage when available.",
@@ -666,8 +724,6 @@ def volume_management_menu() -> None:
             print_volume_contents(volume_name)
         elif kind == "refresh":
             print_volume_contents(volume_name, refresh_usage=True)
-        elif kind == "refresh-model-sizes":
-            print_volume_contents(volume_name, refresh_model_sizes=True)
         elif kind == "delete-models":
             delete_remote_model_files()
         elif kind == "clean":
@@ -695,11 +751,6 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run recursive size scan and update the local usage cache.",
     )
-    list_parser.add_argument(
-        "--refresh-model-sizes",
-        action="store_true",
-        help="Refresh symlink-resolved model file sizes for the comfy-cache tree.",
-    )
     return parser
 
 
@@ -712,7 +763,6 @@ def main(argv: list[str] | None = None) -> int:
             args.volume,
             args.path,
             refresh_usage=args.refresh_usage,
-            refresh_model_sizes=args.refresh_model_sizes,
         )
         return 0
 
