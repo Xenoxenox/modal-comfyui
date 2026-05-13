@@ -6,9 +6,12 @@ from typing import Any
 import questionary
 from questionary import Choice, Style
 from rich import box
+from rich.columns import Columns
 from rich.console import Console
 from rich.panel import Panel
+from rich.syntax import Syntax
 from rich.table import Table
+from rich.text import Text
 
 STYLE = Style([
     ("qmark", "fg:#58a6ff bold"),
@@ -39,6 +42,13 @@ GPU_CHOICES: list[tuple[str, str]] = [
 ]
 
 DEFAULT_GPU_CHOICES = [gpu for gpu, _description in GPU_CHOICES]
+
+SOURCE_STYLES = {
+    "HU": "white on blue",
+    "SN": "black on cyan",
+    "EX": "white on magenta",
+    "LO": "black on green",
+}
 
 
 def print_banner(title: str, subtitle: str) -> None:
@@ -73,6 +83,48 @@ def print_result_panel(
             continue
         table.add_row(key, str(value))
     console.print(Panel(table, title=title, border_style=border_style, box=box.ROUNDED))
+
+
+def source_badge(source: str) -> str:
+    style = SOURCE_STYLES.get(source, "white on grey23")
+    return f"[{style}] {source} [/]"
+
+
+def print_command_panel(
+    title: str,
+    command: Sequence[str],
+    rows: Sequence[tuple[str, Any]] = (),
+    *,
+    border_style: str = "blue",
+) -> None:
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("Key", style="dim", no_wrap=True)
+    table.add_column("Value", style="bold white", overflow="fold")
+    for key, value in rows:
+        if value is None or value == "":
+            continue
+        table.add_row(key, str(value))
+    command_text = " ".join(command)
+    content = Table.grid(expand=True)
+    if rows:
+        content.add_row(table)
+    content.add_row(Syntax(command_text, "powershell", word_wrap=True, theme="ansi_dark"))
+    console.print(Panel(content, title=title, border_style=border_style, box=box.ROUNDED))
+
+
+def model_card(name: str, source: str, target: str) -> Panel:
+    color = SOURCE_STYLES.get(source, "white").split()[-1]
+    content = Text.assemble(
+        (f" {source} ", f"bold {SOURCE_STYLES.get(source, 'white on grey23')}"),
+        f" {name}\n",
+        (target, "dim italic"),
+    )
+    return Panel(content, expand=False, border_style=color)
+
+
+def print_model_cards(cards: Sequence[Panel]) -> None:
+    if cards:
+        console.print(Columns(cards, equal=False, expand=False))
 
 
 def ask_text(

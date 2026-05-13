@@ -17,7 +17,7 @@ modal serve server/ui.py       # dev Web UI (manual)
 python -m scripts.deploy_ui --gpu L4  # production Web UI — persistent endpoint
 python -m client.infer         # headless inference — interactive GPU/workflow selection
 python -m client.watch <url>   # local watcher — download new Web UI outputs into output/
-python -m scripts.manage_volumes  # manage Modal Volumes (list/clean)
+python -m scripts.manage_volumes  # manage Modal Volumes (tree/list/clean)
 ```
 
 No test framework or linter is configured in this repo.
@@ -84,7 +84,7 @@ modal-comfyui/
 │   ├── schema.py        # ModelSpec, PluginSpec, Config dataclasses
 │   └── loader.py        # load_config(), save_config(), to_legacy()
 ├── scripts/
-│   └── manage_volumes.py  # Volume listing and cleanup
+│   └── manage_volumes.py  # Volume tree/listing and cleanup
 ├── serve.py             # Convenience launcher: selects GPU, cleans stuck apps, starts modal serve
 ├── workflows/           # Workflow JSON files (copied into image at build time)
 │   └── newbie-official.json  # NewBie image Exp0.1 official workflow

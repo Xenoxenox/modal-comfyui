@@ -9,8 +9,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Any
 
 try:
@@ -25,7 +27,7 @@ except ImportError:
     print("modal is required. Run: uv sync")
     raise
 
-from rich.table import Table
+from rich.tree import Tree
 
 from scripts.tui import (
     STYLE,
@@ -40,6 +42,15 @@ from scripts.tui import (
 CACHE_VOLUME = "comfy-cache"
 OUTPUT_VOLUME = "comfy-output"
 KNOWN_VOLUMES = (CACHE_VOLUME, OUTPUT_VOLUME)
+MODEL_LINK_MANIFEST = "/.modal-comfyui-model-links.json"
+FREE_TIER_REFERENCE_BYTES = 1024**4
+
+SOURCE_BADGES = {
+    "huggingface": "[white on blue] HU [/]",
+    "huggingface_snapshot": "[black on cyan] SN [/]",
+    "external": "[white on magenta] EX [/]",
+    "local": "[black on green] LO [/]",
+}
 
 
 @dataclass(frozen=True)
@@ -91,6 +102,92 @@ def _format_size(size: int | None) -> str:
     return f"{size} B"
 
 
+def _usage_bar(size: int, capacity: int = FREE_TIER_REFERENCE_BYTES) -> str:
+    ratio = min(max(size / capacity, 0.0), 1.0)
+    filled = max(1 if size else 0, round(ratio * 10))
+    empty = 10 - filled
+    percent = ratio * 100
+    return f"[green]{'■' * filled}[/][dim]{'□' * empty}[/] {percent:.1f}%"
+
+
+def _entry_label(entry: VolumeEntry) -> str:
+    if entry.type == "dir":
+        return f"[bold cyan]{entry.path.rstrip('/').split('/')[-1] or entry.path}[/]"
+    size = _format_size(entry.size)
+    usage = f" {_usage_bar(entry.size)}" if entry.size is not None else ""
+    name = entry.path.rstrip("/").split("/")[-1] or entry.path
+    return f"[white]{name}[/] [dim]{size}[/]{usage}"
+
+
+def _read_volume_text(volume_name: str, path: str) -> str:
+    vol = modal.Volume.from_name(volume_name)
+    data = vol.read_file(path)
+    if isinstance(data, bytes):
+        return data.decode("utf-8")
+    if isinstance(data, str):
+        return data
+    return b"".join(data).decode("utf-8")
+
+
+def _load_model_manifest() -> list[dict[str, Any]]:
+    raw = _read_volume_text(CACHE_VOLUME, MODEL_LINK_MANIFEST)
+    data = json.loads(raw)
+    return data if isinstance(data, list) else []
+
+
+def _model_dir_from_target(target_path: str) -> tuple[str, str]:
+    path = PurePosixPath(target_path)
+    parts = path.parts
+    if "models" not in parts:
+        return "other", path.name
+    idx = parts.index("models")
+    if idx + 1 >= len(parts):
+        return "other", path.name
+    model_dir = parts[idx + 1]
+    name = PurePosixPath(*parts[idx + 2:]).as_posix() if idx + 2 < len(parts) else path.name
+    return model_dir, name or path.name
+
+
+def _compact_cache_path(cache_path: str) -> str:
+    path = PurePosixPath(cache_path)
+    parts = path.parts
+    if len(parts) >= 2 and parts[1] == "cache":
+        if "local-models" in parts:
+            idx = parts.index("local-models")
+            return PurePosixPath(*parts[idx:]).as_posix()
+        if parts[-1]:
+            return f".../{parts[-1]}"
+    return path.name or cache_path
+
+
+def print_model_link_tree() -> bool:
+    """Print prepared model links grouped by ComfyUI model directory."""
+    try:
+        items = _load_model_manifest()
+    except Exception:
+        return False
+
+    if not items:
+        return False
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        model_dir, name = _model_dir_from_target(str(item.get("target_path", "")))
+        grouped.setdefault(model_dir, []).append({**item, "display_name": name})
+
+    root = Tree("[bold blue]comfy-cache prepared model links[/]")
+    for model_dir in sorted(grouped):
+        branch = root.add(f"[bold cyan]{model_dir}/[/]")
+        for item in sorted(grouped[model_dir], key=lambda x: str(x["display_name"])):
+            source = str(item.get("source", ""))
+            badge = SOURCE_BADGES.get(source, "[white on grey23] ?? [/]")
+            name = str(item["display_name"])
+            cache_path = str(item.get("cache_path", ""))
+            branch.add(f"{badge} [white]{name}[/] [dim]{_compact_cache_path(cache_path)}[/]")
+    console.print(root)
+    return True
+
+
 def list_volume_entries(volume_name: str, path: str = "/") -> list[VolumeEntry]:
     """Return entries under a Modal Volume path."""
     vol = modal.Volume.from_name(volume_name)
@@ -127,13 +224,24 @@ def print_volume_contents(volume_name: str, path: str = "/") -> None:
         print_status("No entries found.", style="yellow")
         return
 
-    table = Table(title=f"{volume_name}:{path}", show_lines=False)
-    table.add_column("Path", overflow="fold")
-    table.add_column("Type", style="dim", no_wrap=True)
-    table.add_column("Size", justify="right", no_wrap=True)
-    for entry in entries:
-        table.add_row(entry.path, entry.type, _format_size(entry.size))
-    console.print(table)
+    total_size = sum(entry.size or 0 for entry in entries)
+    print_result_panel(
+        "[bold blue]Usage Reference[/bold blue]",
+        [
+            ("Listed bytes", _format_size(total_size)),
+            ("1 TiB reference", _usage_bar(total_size)),
+            ("Note", "Modal pricing currently includes 1 TiB/mo free storage."),
+        ],
+        border_style="cyan",
+    )
+
+    if volume_name == CACHE_VOLUME and path == "/" and print_model_link_tree():
+        return
+
+    root = Tree(f"[bold blue]{volume_name}:{path}[/]")
+    for entry in sorted(entries, key=lambda x: (x.type != "dir", x.path)):
+        root.add(_entry_label(entry))
+    console.print(root)
 
 
 def clean_output_sessions() -> None:

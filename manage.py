@@ -13,6 +13,7 @@ import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlparse
 
 import requests
 
@@ -31,10 +32,14 @@ from scripts.tui import (
     ask_select,
     console,
     gpu_choice_items,
+    model_card,
     print_banner,
+    print_command_panel,
+    print_model_cards,
     print_result_panel,
     print_status,
     print_step,
+    source_badge,
 )
 
 # ── ANSI Colors (Modal-inspired dark + green theme) ──
@@ -68,6 +73,29 @@ def _slugify(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
 
+def _compact_url(url: str) -> str:
+    parsed = urlparse(url)
+    if not parsed.netloc:
+        return url[:60]
+    if "civitai.com" in parsed.netloc:
+        match = re.search(r"/(?:api/download/models|models)/(\d+)", parsed.path)
+        if match:
+            return f"civitai:{match.group(1)}"
+    return parsed.netloc
+
+
+def _fuzzy_match(needle: str, haystack: str) -> bool:
+    if not needle:
+        return True
+    if needle in haystack:
+        return True
+    pos = 0
+    for char in haystack:
+        if pos < len(needle) and char == needle[pos]:
+            pos += 1
+    return pos == len(needle)
+
+
 def _rel_to_volume_path(path: PurePosixPath) -> str:
     posix = path.as_posix()
     if not posix.startswith("/"):
@@ -84,6 +112,20 @@ def _normalise_cache_filename(filename: str) -> str:
 
 def _parse_local_path(raw_path: str) -> Path:
     return Path(raw_path.strip().strip("\"'")).expanduser()
+
+
+def nearby_directory_hint(text: str, *, limit: int = 5) -> str:
+    candidate = Path(text.strip().strip("\"'")).expanduser()
+    base = candidate if candidate.is_dir() else candidate.parent
+    if not str(base) or not base.exists() or not base.is_dir():
+        base = Path.cwd()
+    try:
+        directories = sorted(p.name for p in base.iterdir() if p.is_dir())[:limit]
+    except OSError:
+        return ""
+    if not directories:
+        return ""
+    return " Available folders: " + ", ".join(directories)
 
 
 def _upload_to_cache(local_path: Path, cache_filename: str) -> bool:
@@ -380,6 +422,9 @@ def _add_local_model(cfg: Config) -> None:
     local_path = _parse_local_path(raw_path)
     if not local_path.exists() or not local_path.is_file():
         print(f"  {R}File not found:{RST} {local_path}")
+        hint = nearby_directory_hint(raw_path)
+        if hint:
+            console.print(f"  [dim]{hint}[/]")
         return
     if not _is_model_file(local_path.name):
         print(f"  {R}Unsupported model file extension:{RST} {local_path.suffix}")
@@ -488,33 +533,70 @@ def _list_models(cfg: Config) -> None:
         print(f"  {D}No models configured.{RST}")
         return
 
+    filter_text = questionary.text(
+        "Filter models (blank = all):",
+        default="",
+        style=STYLE,
+    ).ask()
+    if filter_text is None:
+        return
+    needle = filter_text.strip().lower()
+
     bundles: dict[str | None, list[tuple[str, ModelSpec]]] = defaultdict(list)
     for key, spec in cfg.models.items():
+        haystack = " ".join(
+            str(part)
+            for part in (
+                key,
+                spec.bundle,
+                spec.source.value,
+                spec.repo_id,
+                spec.filename,
+                spec.model_dir,
+                spec.target_dir,
+                spec.url,
+            )
+            if part
+        ).lower()
+        if not _fuzzy_match(needle, haystack):
+            continue
         bundles[spec.bundle].append((key, spec))
 
-    total = len(cfg.models)
-    print(f"\n  {W}{B}Models{RST} {D}({total} total){RST}")
+    total = sum(len(items) for items in bundles.values())
+    console.print(f"\n[bold white]Models[/] [dim]({total} shown / {len(cfg.models)} total)[/]")
+    console.print("[dim][F] Filter  [R] Refresh  [D] Delete  [B] Back[/]")
 
     for bundle_name in sorted(bundles, key=lambda x: (x is None, x or "")):
         items = bundles[bundle_name]
         if bundle_name:
-            print(f"\n  {G0}{B}Bundle: {bundle_name}{RST} {D}({len(items)} models){RST}")
+            console.print(f"\n[bold green]Bundle: {bundle_name}[/] [dim]({len(items)} models)[/]")
         else:
-            print(f"\n  {D}Standalone:{RST}")
+            console.print("\n[dim]Standalone:[/]")
 
+        cards = []
         for key, spec in items:
-            src_label = spec.source.value[:2].upper()
             if spec.source == ModelSource.HUGGINGFACE:
+                src_label = "HU"
                 target = f"{spec.model_dir}/{spec.save_as or Path(spec.filename).name}"
-                print(f"    {W}{key:<25}{RST} {G0}{src_label}{RST}  {D}{spec.repo_id}{RST}  {G0}→{RST} {D}{target}{RST}")
+                detail = f"{spec.repo_id} -> {target}"
             elif spec.source == ModelSource.HUGGINGFACE_SNAPSHOT:
-                print(f"    {W}{key:<25}{RST} {G0}SN{RST}  {D}{spec.repo_id}{RST}  {G0}→{RST} {D}{spec.target_dir}{RST}")
+                src_label = "SN"
+                target = str(spec.target_dir)
+                detail = f"{spec.repo_id} -> {target}"
             elif spec.source == ModelSource.EXTERNAL:
+                src_label = "EX"
                 target = f"{spec.model_dir}/{spec.filename}"
-                print(f"    {W}{key:<25}{RST} {G0}EX{RST}  {D}{spec.url[:40]}...{RST}  {G0}→{RST} {D}{target}{RST}")
+                detail = f"{_compact_url(spec.url or '')} -> {target}"
             elif spec.source == ModelSource.LOCAL:
+                src_label = "LO"
                 target = f"{spec.model_dir}/{spec.save_as or Path(spec.filename).name}"
-                print(f"    {W}{key:<25}{RST} {G0}LO{RST}  {D}{CACHE_VOLUME}/{spec.filename}{RST}  {G0}→{RST} {D}{target}{RST}")
+                detail = f"{CACHE_VOLUME}/{spec.filename} -> {target}"
+            else:
+                src_label = "??"
+                detail = ""
+            console.print(f"  [bold white]{key:<25}[/] {source_badge(src_label)} [dim]{detail}[/]")
+            cards.append(model_card(key, src_label, detail))
+        print_model_cards(cards)
     print()
 
 
@@ -741,6 +823,12 @@ def _deploy(cfg: Config) -> None:
             ],
             border_style="blue",
         )
+        print_command_panel(
+            "[bold blue]Confirm Command[/bold blue]",
+            [sys.executable, "-m", "scripts.deploy_ui", "--gpu", gpu_choice],
+            [("GPU", gpu_choice), ("Mode", "deploy")],
+            border_style="blue",
+        )
         subprocess.run(
             [sys.executable, "-m", "scripts.deploy_ui", "--gpu", gpu_choice],
             env=_modal_env(),
@@ -776,6 +864,12 @@ def _deploy(cfg: Config) -> None:
             ],
             border_style="blue",
         )
+        print_command_panel(
+            "[bold blue]Confirm Command[/bold blue]",
+            cmd,
+            [("Dry run", dry_run), ("Force refresh", force), ("Volume", CACHE_VOLUME)],
+            border_style="blue",
+        )
         subprocess.run(cmd, env=_modal_env(), check=True)
     elif action == "serve":
         gpu_choice = _choose_web_gpu()
@@ -786,6 +880,12 @@ def _deploy(cfg: Config) -> None:
                 ("GPU", gpu_choice),
                 ("Encoding", "UTF-8 environment enabled"),
             ],
+            border_style="blue",
+        )
+        print_command_panel(
+            "[bold blue]Confirm Command[/bold blue]",
+            [sys.executable, "serve.py", "--gpu", gpu_choice],
+            [("GPU", gpu_choice), ("Mode", "dev serve")],
             border_style="blue",
         )
         subprocess.run(
