@@ -7,6 +7,7 @@ Usage:
 from __future__ import annotations
 
 import dataclasses
+import os
 import re
 import subprocess
 import sys
@@ -17,13 +18,24 @@ import requests
 
 try:
     import questionary
-    from questionary import Style
 except ImportError:
     print("questionary is required. Run: uv sync")
     raise
 
 from config.loader import load_config, save_config, ConfigError
 from config.schema import Config, ModelSource, ModelSpec, PluginSpec, VALID_MODEL_DIRS
+from scripts.manage_volumes import volume_management_menu
+from scripts.tui import (
+    STYLE,
+    ask_confirm,
+    ask_select,
+    console,
+    gpu_choice_items,
+    print_banner,
+    print_result_panel,
+    print_status,
+    print_step,
+)
 
 # ── ANSI Colors (Modal-inspired dark + green theme) ──
 G = "\033[92m"   # bright green (accent)
@@ -34,24 +46,12 @@ R = "\033[91m"   # red (errors)
 B = "\033[1m"    # bold
 RST = "\033[0m"  # reset
 
-STYLE = Style([
-    ("qmark", "fg:#3DCA5D bold"),
-    ("question", "fg:#ffffff bold"),
-    ("answer", "fg:#3DCA5D bold"),
-    ("pointer", "fg:#3DCA5D bold"),
-    ("highlighted", "fg:#3DCA5D bold"),
-    ("selected", "fg:#3DCA5D"),
-    ("separator", "fg:#059443"),
-    ("instruction", "fg:#888888"),
-    ("text", "fg:#cccccc"),
-    ("checkbox", "fg:#3DCA5D"),
-    ("disabled", "fg:#555555"),
-])
-
 CONFIG_PATH = Path(__file__).parent / "config.toml"
 EXAMPLE_PATH = Path(__file__).parent / "config.toml.example"
 CACHE_VOLUME = "comfy-cache"
 LOCAL_MODEL_CACHE_DIR = PurePosixPath("local-models")
+WEB_UI_GPU_ENV = "COMFYUI_WEB_GPU"
+DEFAULT_WEB_UI_GPU = "L4"
 
 
 def _ensure_config() -> Config:
@@ -684,35 +684,77 @@ def _remove_plugins(cfg: Config) -> None:
 # ── Deploy ──
 
 
+def _modal_env(gpu_choice: str | None = None) -> dict[str, str]:
+    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    if gpu_choice:
+        env[WEB_UI_GPU_ENV] = gpu_choice
+    return env
+
+
+def _choose_web_gpu() -> str:
+    return ask_select(
+        "Web UI GPU:",
+        choices=gpu_choice_items(DEFAULT_WEB_UI_GPU),
+        default=DEFAULT_WEB_UI_GPU,
+        instruction=(
+            "Used by server/ui.py for modal serve/deploy. "
+            "Headless inference still asks for GPU per run."
+        ),
+    )
+
+
 def _deploy(cfg: Config) -> None:
-    action = questionary.select(
+    action = ask_select(
         "Deploy action:",
         choices=[
-            "Deploy to Modal (modal deploy server/ui.py)",
-            "Prepare models on Modal",
-            "Dev serve (python serve.py)",
-            "Back",
+            questionary.Choice(
+                "Prepare models on Modal",
+                value="prepare",
+                description="Download/link configured models into comfy-cache.",
+            ),
+            questionary.Choice(
+                "Dev serve Web UI",
+                value="serve",
+                description="Run python serve.py with a selected Web UI GPU.",
+            ),
+            questionary.Choice(
+                "Deploy Web UI",
+                value="deploy",
+                description="Run modal deploy server/ui.py with a selected Web UI GPU.",
+            ),
+            questionary.Choice(
+                "Back",
+                value="back",
+                description="Return to the main menu.",
+            ),
         ],
-        style=STYLE,
-    ).ask()
+    )
 
-    if action and "modal deploy" in action:
-        import os
-
-        print(f"\n  {G}Running:{RST} {W}modal deploy server/ui.py{RST}")
-        env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
-        subprocess.run(["modal", "deploy", "server/ui.py"], env=env)
-    elif action == "Prepare models on Modal":
-        import os
-
-        dry_run = questionary.confirm("Dry run only?", default=False, style=STYLE).ask()
+    if action == "deploy":
+        gpu_choice = _choose_web_gpu()
+        print_result_panel(
+            "[bold blue]Web UI Deploy[/bold blue]",
+            [
+                ("Command", "modal deploy server/ui.py"),
+                ("GPU", gpu_choice),
+                ("Models", "Use Prepare models first if cache links are missing."),
+            ],
+            border_style="blue",
+        )
+        subprocess.run(["modal", "deploy", "server/ui.py"], env=_modal_env(gpu_choice), check=True)
+    elif action == "prepare":
+        dry_run = ask_confirm(
+            "Dry run only?",
+            default=False,
+            instruction="Shows the model/link plan without downloading or writing the manifest.",
+        )
         force = False
         if not dry_run:
-            force = questionary.confirm(
+            force = ask_confirm(
                 "Force refresh remote downloads?",
                 default=False,
-                style=STYLE,
-            ).ask()
+                instruction="Re-download remote model files even when cache entries exist.",
+            )
 
         cmd = ["modal", "run", "server/app.py::prepare"]
         if dry_run:
@@ -720,12 +762,29 @@ def _deploy(cfg: Config) -> None:
         if force:
             cmd.append("--force")
 
-        print(f"\n  {G}Running:{RST} {W}{' '.join(cmd)}{RST}")
-        env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
-        subprocess.run(cmd, env=env)
-    elif action and "serve" in action:
-        print(f"\n  {G}Running:{RST} {W}python serve.py{RST}")
-        subprocess.run([sys.executable, "serve.py"])
+        print_result_panel(
+            "[bold blue]Model Prepare[/bold blue]",
+            [
+                ("Command", " ".join(cmd)),
+                ("Volume", CACHE_VOLUME),
+                ("Dry run", dry_run),
+                ("Force refresh", force),
+            ],
+            border_style="blue",
+        )
+        subprocess.run(cmd, env=_modal_env(), check=True)
+    elif action == "serve":
+        gpu_choice = _choose_web_gpu()
+        print_result_panel(
+            "[bold blue]Web UI Dev Serve[/bold blue]",
+            [
+                ("Command", "python serve.py"),
+                ("GPU", gpu_choice),
+                ("Encoding", "UTF-8 environment enabled"),
+            ],
+            border_style="blue",
+        )
+        subprocess.run([sys.executable, "serve.py"], env=_modal_env(gpu_choice), check=True)
 
 
 # ── Main Menu ──
@@ -789,11 +848,10 @@ def _plugins_menu(cfg: Config) -> None:
 
 
 def main() -> None:
-    print()
-    print(f"  {G}{B}┌─────────────────────────────────┐{RST}")
-    print(f"  {G}{B}│{RST}  {W}{B}ComfyUI  Config  Manager{RST}       {G}{B}│{RST}")
-    print(f"  {G}{B}└─────────────────────────────────┘{RST}")
-    print()
+    print_banner(
+        "ComfyUI Manager",
+        "Configure models/plugins, prepare Modal volumes, and launch the Web UI.",
+    )
 
     try:
         cfg = _ensure_config()
@@ -803,30 +861,52 @@ def main() -> None:
 
     n_models = len(cfg.models)
     n_plugins = len(cfg.plugins)
-    print(f"  {D}{n_models} models · {n_plugins} plugins{RST}\n")
+    print_status(f"{n_models} models - {n_plugins} plugins", style="green")
 
     while True:
-        choice = questionary.select(
+        choice = ask_select(
             "What do you want to do?",
             choices=[
-                "Manage models",
-                "Manage plugins",
-                "Deploy to Modal",
-                "Exit",
+                questionary.Choice(
+                    "Manage models",
+                    value="models",
+                    description="Add/list/remove model config and upload local model files.",
+                ),
+                questionary.Choice(
+                    "Manage plugins",
+                    value="plugins",
+                    description="Add/list/remove ComfyUI custom node config.",
+                ),
+                questionary.Choice(
+                    "Prepare / launch Modal",
+                    value="deploy",
+                    description="Prepare comfy-cache, choose Web UI GPU, serve or deploy.",
+                ),
+                questionary.Choice(
+                    "Manage Modal Volumes",
+                    value="volumes",
+                    description="List comfy-cache/comfy-output or clean old output sessions.",
+                ),
+                questionary.Choice("Exit", value="exit"),
             ],
-            style=STYLE,
-        ).ask()
+        )
 
-        if not choice or choice == "Exit":
+        if choice == "exit":
             break
-        elif choice == "Manage models":
+        elif choice == "models":
+            print_step("Models")
             _models_menu(cfg)
-        elif choice == "Manage plugins":
+        elif choice == "plugins":
+            print_step("Plugins")
             _plugins_menu(cfg)
-        elif choice == "Deploy to Modal":
+        elif choice == "deploy":
+            print_step("Modal")
             _deploy(cfg)
+        elif choice == "volumes":
+            print_step("Volumes")
+            volume_management_menu()
 
-    print(f"\n  {G}{B}Done.{RST}\n")
+    console.print("\n[bold green]Done.[/bold green]\n")
 
 
 if __name__ == "__main__":

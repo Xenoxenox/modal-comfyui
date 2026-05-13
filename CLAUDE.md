@@ -9,8 +9,9 @@ Run ComfyUI on Modal with two modes: **Web UI** (browser-based workflow design) 
 ## Commands
 
 ```bash
-uv sync                        # install dependencies (modal + questionary)
+uv sync                        # install dependencies (modal + questionary + rich)
 modal setup                    # authenticate with Modal (one-time)
+python manage.py               # interactive manager for config, prepare, GPU, volumes
 python serve.py                # dev Web UI — auto-cleans old apps, logs to logs/modal_serve_[timestamp].log
 modal serve server/ui.py       # dev Web UI (manual)
 modal deploy server/ui.py      # production Web UI — persistent endpoint
@@ -155,6 +156,7 @@ node_id = "comfyui-my-nodes"   # or use repo = "https://github.com/..."
 ### Web UI (`server/ui.py`)
 
 - `@modal.web_server(8000)` serving ComfyUI on port 8000 via `comfy launch --background`
+- Web UI GPU defaults to `L4`; local launchers can set `COMFYUI_WEB_GPU` before `modal serve`/`modal deploy`
 - GPU snapshots (`enable_gpu_snapshot`) for faster cold starts — **only works with `modal deploy`, not `modal serve`**
 - Scales to zero after 60s idle (`scaledown_window`)
 - output_vol is imported but **not yet mounted** — generated images currently stay in the container and are lost on scale-down

@@ -402,6 +402,7 @@ dependencies = [
     { name = "modal" },
     { name = "questionary" },
     { name = "requests" },
+    { name = "rich" },
     { name = "tomli-w" },
     { name = "tqdm" },
 ]
@@ -411,6 +412,7 @@ requires-dist = [
     { name = "modal", specifier = ">=1.3.0.post1" },
     { name = "questionary", specifier = ">=2.1.0" },
     { name = "requests", specifier = ">=2.32.0" },
+    { name = "rich", specifier = ">=13.0.0" },
     { name = "tomli-w", specifier = ">=1.2.0" },
     { name = "tqdm", specifier = ">=4.66.0" },
 ]

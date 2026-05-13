@@ -59,6 +59,13 @@ Add these custom nodes to `config.toml` (be careful of node id).
 
 ## Usage
 
+### Interactive Manager
+
+Use the local manager for model/plugin config, model prepare, Web UI GPU selection, and Volume inspection:
+```bash
+python manage.py
+```
+
 ### Web UI — Serve (Development)
 
 Run the following command to start ComfyUI in development mode:
@@ -66,6 +73,11 @@ Run the following command to start ComfyUI in development mode:
 modal serve server/ui.py
 ```
 This will provide a temporary URL where you can access the ComfyUI interface.
+The Web UI uses `L4` by default. To choose another GPU without the manager:
+```bash
+COMFYUI_WEB_GPU=L40S modal serve server/ui.py
+```
+On PowerShell, set `$env:COMFYUI_WEB_GPU="L40S"` before running `modal serve` or `modal deploy`.
 
 ### Web UI — Deploy (Production)
 
@@ -73,6 +85,7 @@ To deploy ComfyUI as a persistent app:
 ```bash
 modal deploy server/ui.py
 ```
+`python manage.py` can prompt for the Web UI GPU before running deploy. For direct CLI use, set `COMFYUI_WEB_GPU` in the environment.
 
 ### Headless Inference
 
@@ -88,6 +101,11 @@ Place your ComfyUI API-format workflow JSON files in the `workflows/` directory.
 List cached models or clean up old inference sessions:
 ```bash
 python -m scripts.manage_volumes
+```
+Non-interactive list checks are also available:
+```bash
+python -m scripts.manage_volumes list --volume comfy-cache
+python -m scripts.manage_volumes list --volume comfy-output
 ```
 
 ## Features
