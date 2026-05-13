@@ -49,6 +49,6 @@ scripts/run_and_report.py
 output/
 
 # Reference files
-ComfyUI-云端架构构思.md
+.ref/
 
 config.toml
