@@ -4,7 +4,7 @@ import subprocess
 
 import modal
 
-from server.app import app, cache_vol, CACHE_MOUNT
+from server.app import app, cache_vol, CACHE_MOUNT, sync_prepared_model_links
 
 
 @app.function(
@@ -18,6 +18,8 @@ from server.app import app, cache_vol, CACHE_MOUNT
 @modal.concurrent(max_inputs=10)
 @modal.web_server(8000, startup_timeout=60)
 def ui():
+    cache_vol.reload()
+    sync_prepared_model_links()
     subprocess.Popen(
         "comfy launch --background -- --listen 0.0.0.0 --port 8000", shell=True
     )

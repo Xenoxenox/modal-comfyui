@@ -689,6 +689,7 @@ def _deploy(cfg: Config) -> None:
         "Deploy action:",
         choices=[
             "Deploy to Modal (modal deploy server/ui.py)",
+            "Prepare models on Modal",
             "Dev serve (python serve.py)",
             "Back",
         ],
@@ -701,6 +702,27 @@ def _deploy(cfg: Config) -> None:
         print(f"\n  {G}Running:{RST} {W}modal deploy server/ui.py{RST}")
         env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
         subprocess.run(["modal", "deploy", "server/ui.py"], env=env)
+    elif action == "Prepare models on Modal":
+        import os
+
+        dry_run = questionary.confirm("Dry run only?", default=False, style=STYLE).ask()
+        force = False
+        if not dry_run:
+            force = questionary.confirm(
+                "Force refresh remote downloads?",
+                default=False,
+                style=STYLE,
+            ).ask()
+
+        cmd = ["modal", "run", "server/app.py::prepare"]
+        if dry_run:
+            cmd.append("--dry-run")
+        if force:
+            cmd.append("--force")
+
+        print(f"\n  {G}Running:{RST} {W}{' '.join(cmd)}{RST}")
+        env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+        subprocess.run(cmd, env=env)
     elif action and "serve" in action:
         print(f"\n  {G}Running:{RST} {W}python serve.py{RST}")
         subprocess.run([sys.executable, "serve.py"])
