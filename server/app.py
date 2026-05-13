@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -20,11 +21,54 @@ COMFY_WORKFLOWS_DIR = COMFY_DEFAULT_USER_DIR / "workflows"
 WORKFLOW_SEED_DIR = "/root/comfy/workflow-seed"
 CONFIG_PATH = "/root/config.toml"
 MODEL_LINK_MANIFEST = Path(CACHE_MOUNT) / ".modal-comfyui-model-links.json"
+DEFAULT_HF_SECRET_NAME = "ComfyUI"
+DEFAULT_CIVITAI_SECRET_NAME = "civitai-api-key"
+DISABLED_SECRET_NAMES = {"", "none", "false"}
+MODAL_HF_SECRET_NAME_ENV = "MODAL_HF_SECRET_NAME"
+MODAL_CIVITAI_SECRET_NAME_ENV = "MODAL_CIVITAI_SECRET_NAME"
 
 root_dir = Path(__file__).parent.parent
 
 
 # ── Model Download Functions ──
+
+
+def _prepare_secret_env() -> dict[str, str]:
+    return {
+        MODAL_HF_SECRET_NAME_ENV: os.environ.get(
+            MODAL_HF_SECRET_NAME_ENV,
+            DEFAULT_HF_SECRET_NAME,
+        ),
+        MODAL_CIVITAI_SECRET_NAME_ENV: os.environ.get(
+            MODAL_CIVITAI_SECRET_NAME_ENV,
+            DEFAULT_CIVITAI_SECRET_NAME,
+        ),
+    }
+
+
+def _configured_secret_name(env_var: str, default: str) -> str | None:
+    secret_name = os.environ.get(env_var, default).strip()
+    if secret_name.lower() in DISABLED_SECRET_NAMES:
+        return None
+    return secret_name
+
+
+def get_model_prepare_secrets() -> list[modal.Secret]:
+    secret_names = [
+        _configured_secret_name(MODAL_HF_SECRET_NAME_ENV, DEFAULT_HF_SECRET_NAME),
+        _configured_secret_name(
+            MODAL_CIVITAI_SECRET_NAME_ENV,
+            DEFAULT_CIVITAI_SECRET_NAME,
+        ),
+    ]
+    secrets: list[modal.Secret] = []
+    seen: set[str] = set()
+    for secret_name in secret_names:
+        if secret_name is None or secret_name in seen:
+            continue
+        secrets.append(modal.Secret.from_name(secret_name))
+        seen.add(secret_name)
+    return secrets
 
 
 def _target_name(filename: str, save_as: str | None = None) -> str:
@@ -314,7 +358,10 @@ image = (
     .run_commands("git lfs install")
     .add_local_python_source("config", copy=True)
     .add_local_file(str(root_dir / "config.toml"), CONFIG_PATH, copy=True)
-    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
+    .env({
+        "HF_HUB_ENABLE_HF_TRANSFER": "1",
+        **_prepare_secret_env(),
+    })
 )
 
 # Install custom nodes from config
@@ -349,10 +396,7 @@ app = modal.App(name="modal-comfyui", image=image)
 
 @app.function(
     volumes={CACHE_MOUNT: cache_vol},
-    secrets=[
-        modal.Secret.from_name("ComfyUI"),
-        modal.Secret.from_name("civitai-api-key"),
-    ],
+    secrets=get_model_prepare_secrets(),
     timeout=60 * 60,
 )
 def prepare_models(dry_run: bool = False, force: bool = False) -> dict[str, Any]:

@@ -37,14 +37,18 @@ Optionally place a `workflow_api.json` at the repo root or workflow JSON files i
 - Do not commit them again; they are now ignored in `.gitignore`.
 - Because they were already committed once, removing them from future pushes requires a later cleanup commit with `git rm --cached`.
 
-## Modal Secrets Required
+## Modal Secrets for Model Prepare
 
-| Secret Name    | Key              | Purpose                              |
-|----------------|------------------|--------------------------------------|
-| `ComfyUI`      | `HF_TOKEN`       | HuggingFace token (gated models)     |
-| `civitai-api-key` | `CIVITAI_API_KEY` | CivitAI download token            |
+`modal run server/app.py::prepare` mounts secrets for private model downloads. Secret names are configurable with local environment variables, while the keys inside Modal stay fixed:
+
+| Environment variable | Default Modal secret | Key inside secret | Purpose |
+|----------------------|----------------------|-------------------|---------|
+| `MODAL_HF_SECRET_NAME` | `ComfyUI` | `HF_TOKEN` | Hugging Face token for gated models |
+| `MODAL_CIVITAI_SECRET_NAME` | `civitai-api-key` | `CIVITAI_API_KEY` | CivitAI download token |
 
 Create secrets: `modal secret create <name> KEY=value`
+
+Set either env var to an empty string, `none`, or `false` to skip mounting that secret. This supports public Hugging Face models and configs that do not use CivitAI. Do not put token values in `config.toml`, docs, or logs.
 
 ## Windows / Encoding Notes
 
@@ -102,7 +106,7 @@ The image is built in layers and cached by Modal:
 2. `apt_install` + `pip_install_from_requirements` (`comfy-cli`, `huggingface_hub`, `wget`)
 3. `comfy --skip-prompt install --nvidia` — installs ComfyUI into the image
 4. `add_local_python_source("config")` + `add_local_file("config.toml")` — config baked in **after** heavy layers so model/plugin changes don't bust apt/pip/comfy cache
-5. `download_all()` runs as a build step against `comfy-cache` — reads `config.toml`, downloads models and symlinks them into ComfyUI model dirs; does **not** copy files
+5. `prepare_models` runs on demand via `modal run server/app.py::prepare` against `comfy-cache` — reads `config.toml`, downloads models and symlinks them into ComfyUI model dirs; does **not** copy files
 6. If plugins defined in `config.toml`: `comfy node install` for each plugin ID
 7. `workflows/` directory is copied into `/root/comfy/workflow-seed/`
 

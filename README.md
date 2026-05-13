@@ -26,23 +26,36 @@ Good for testing wan2.2 or other video generation models.
 
 ### Models
 
-Copy `models.example.py` to `models.py` and edit it to manage your models. You can specify:
+Copy `config.toml.example` to `config.toml` and edit it to manage your models. You can specify:
 - Hugging Face models(`models`) using `repo_id` and `filename`.
 - External models(`models_ext`, e.g. civitai) using a direct `url`.
 
 Models are downloaded to volumes and symlinked to the specified `model_dir`.
-See `models.example.py` for reference.
+See `config.toml.example` for reference.
+
+### Modal Secrets for Model Prepare
+
+`modal run server/app.py::prepare` mounts Modal secrets only for model downloads. By default it stays compatible with the original secret names:
+
+| Environment variable | Default Modal secret | Secret key used inside Modal |
+|----------------------|----------------------|------------------------------|
+| `MODAL_HF_SECRET_NAME` | `ComfyUI` | `HF_TOKEN` |
+| `MODAL_CIVITAI_SECRET_NAME` | `civitai-api-key` | `CIVITAI_API_KEY` |
+
+You can point either variable at a differently named Modal secret. Set it to an empty string, `none`, or `false` to skip mounting that secret, which is useful for public Hugging Face models or configs that do not use CivitAI.
+
+Do not put tokens in `config.toml`, README examples, or logs. Store tokens only in Modal secrets, and keep the secret keys as `HF_TOKEN` and `CIVITAI_API_KEY`.
 
 ### Plugins and Custom Nodes
 
-Copy `plugins.example.py` to `plugins.py` and edit it to add custom node IDs or titles to be installed via `comfy-cli`.
+Add custom node IDs or GitHub repos to `config.toml` to install them via `comfy-cli`.
 - **Workflow Dependencies**: If you have a `workflow_api.json` in the root directory, the setup will automatically install the necessary custom nodes for that workflow.
 
 ### In case of Insufficient Custom Node
 
 Open ComfyUI manager on comfyui and click "Used in Workflow" to see which custom nodes are used in the workflow.
 
-Add these custom nodes to `plugins.py`(be careful of node id).
+Add these custom nodes to `config.toml` (be careful of node id).
 
 ## Usage
 
