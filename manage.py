@@ -33,9 +33,11 @@ from scripts.tui import (
     console,
     gpu_choice_items,
     model_card,
+    plugin_card,
     print_banner,
     print_command_panel,
     print_model_cards,
+    print_plugin_cards,
     print_result_panel,
     print_status,
     print_step,
@@ -62,7 +64,7 @@ DEFAULT_WEB_UI_GPU = "L4"
 def _ensure_config() -> Config:
     if not CONFIG_PATH.exists():
         print(f"  {D}config.toml not found.{RST}")
-        if questionary.confirm("Create empty config.toml?", default=True, style=STYLE).ask():
+        if ask_confirm("Create empty config.toml?", default=True):
             save_config(Config(models={}, plugins={}), CONFIG_PATH)
         else:
             sys.exit(1)
@@ -112,6 +114,12 @@ def _normalise_cache_filename(filename: str) -> str:
 
 def _parse_local_path(raw_path: str) -> Path:
     return Path(raw_path.strip().strip("\"'")).expanduser()
+
+
+def _windows_path_note(raw_path: str) -> str:
+    if "\\" not in raw_path:
+        return ""
+    return "Windows separators are accepted locally; cache paths are normalized to POSIX / paths."
 
 
 def nearby_directory_hint(text: str, *, limit: int = 5) -> str:
@@ -418,6 +426,9 @@ def _add_local_model(cfg: Config) -> None:
     ).ask()
     if not raw_path:
         return
+    separator_note = _windows_path_note(raw_path)
+    if separator_note:
+        console.print(f"  [dim]{separator_note}[/]")
 
     local_path = _parse_local_path(raw_path)
     if not local_path.exists() or not local_path.is_file():
@@ -477,7 +488,7 @@ def _add_local_model(cfg: Config) -> None:
         f"\n  {D}Target:{RST} {W}{model_dir}/{display_name}{RST}"
         f"\n  {D}Cache:{RST}  {W}{cache_filename}{RST}\n"
     )
-    if not questionary.confirm("Upload now?", default=True, style=STYLE).ask():
+    if not ask_confirm("Upload now?", default=True):
         return
 
     if not _upload_to_cache(local_path, cache_filename):
@@ -614,9 +625,7 @@ def _remove_models(cfg: Config) -> None:
     if not to_remove:
         return
 
-    if not questionary.confirm(
-        f"Remove {len(to_remove)} model(s)?", default=False, style=STYLE
-    ).ask():
+    if not ask_confirm(f"Remove {len(to_remove)} model(s)?", default=False):
         return
 
     for key in to_remove:
@@ -727,16 +736,30 @@ def _add_plugin(cfg: Config) -> None:
 
 def _list_plugins(cfg: Config) -> None:
     if not cfg.plugins:
-        print(f"  {D}No plugins configured.{RST}")
+        console.print("[dim]  No plugins configured.[/]")
         return
-    print(f"\n  {W}{B}Plugins{RST} {D}({len(cfg.plugins)} total){RST}")
+
+    filter_text = questionary.text(
+        "Filter plugins (blank = all):",
+        default="",
+        style=STYLE,
+    ).ask()
+    if filter_text is None:
+        return
+    needle = filter_text.strip().lower()
+
+    cards = []
+    console.print(f"\n[bold white]Installed Plugins[/] [dim]({len(cfg.plugins)} total)[/]")
     for key, spec in cfg.plugins.items():
-        name_str = f"  {D}({spec.name}){RST}" if spec.name else ""
-        if spec.repo:
-            id_str = spec.repo
-        else:
-            id_str = spec.node_id or ""
-        print(f"  {W}{key:<25}{RST} {D}{id_str}{RST}{name_str}")
+        source = spec.repo or spec.node_id or "local"
+        name = spec.name or key
+        haystack = f"{key} {name} {source}".lower()
+        if not _fuzzy_match(needle, haystack):
+            continue
+        branch = "main" if spec.repo else "registry"
+        console.print(f"  [bold white]{key:<25}[/] [dim]{source}[/]")
+        cards.append(plugin_card(name, source, branch))
+    print_plugin_cards(cards)
     print()
 
 
@@ -753,9 +776,7 @@ def _remove_plugins(cfg: Config) -> None:
     if not to_remove:
         return
 
-    if not questionary.confirm(
-        f"Remove {len(to_remove)} plugin(s)?", default=False, style=STYLE
-    ).ask():
+    if not ask_confirm(f"Remove {len(to_remove)} plugin(s)?", default=False):
         return
 
     for key in to_remove:
@@ -1002,16 +1023,16 @@ def main() -> None:
         if choice == "exit":
             break
         elif choice == "models":
-            print_step("Models")
+            print_step("Main > Models")
             _models_menu(cfg)
         elif choice == "plugins":
-            print_step("Plugins")
+            print_step("Main > Plugins")
             _plugins_menu(cfg)
         elif choice == "deploy":
-            print_step("Modal")
+            print_step("Main > Modal")
             _deploy(cfg)
         elif choice == "volumes":
-            print_step("Volumes")
+            print_step("Main > Volumes")
             volume_management_menu()
 
     console.print("\n[bold green]Done.[/bold green]\n")

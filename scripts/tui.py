@@ -62,7 +62,12 @@ def print_banner(title: str, subtitle: str) -> None:
 
 
 def print_step(title: str) -> None:
-    console.rule(f"[dim]{title}[/dim]", style="dim #30363d")
+    parts = [part.strip() for part in title.split(">")]
+    if len(parts) > 1:
+        text = " [dim]>[/] ".join(f"[bold blue]{part}[/]" for part in parts)
+    else:
+        text = f"[bold blue]{title}[/]"
+    console.print(f"\n{text}\n")
 
 
 def print_status(message: str, *, style: str = "green") -> None:
@@ -127,6 +132,40 @@ def print_model_cards(cards: Sequence[Panel]) -> None:
         console.print(Columns(cards, equal=False, expand=False))
 
 
+def plugin_card(name: str, source: str, branch: str = "main") -> Panel:
+    is_git = source.endswith(".git") or "github.com" in source
+    label = "GIT" if is_git else "REG"
+    color = "green" if is_git else "yellow"
+    display_source = source
+    if "github.com" in source:
+        display_source = source.split("github.com/", 1)[-1].removesuffix(".git")
+    content = Text.assemble(
+        (f"{name}\n", "bold white"),
+        (f"{display_source} ", "dim"),
+        (f"({branch})", "magenta italic"),
+    )
+    return Panel(
+        content,
+        title=f"[bold {color}]{label}[/] Plugin",
+        title_align="left",
+        expand=False,
+        border_style=color,
+    )
+
+
+def print_plugin_cards(cards: Sequence[Panel]) -> None:
+    if cards:
+        console.print(Columns(cards, equal=True, expand=True))
+
+
+def _append_confirmation_suffix(message: str, default: bool) -> str:
+    suffix = "(Y/n)" if default else "(y/N)"
+    stripped = message.strip()
+    if any(stripped.endswith(s) for s in ("(Y/n)", "(y/N)", "[Y/n]", "[y/N]")):
+        return stripped
+    return f"{stripped} {suffix}"
+
+
 def ask_text(
     message: str,
     default: str = "",
@@ -152,11 +191,13 @@ def ask_confirm(
     *,
     instruction: str | None = None,
 ) -> bool:
+    formatted_message = _append_confirmation_suffix(message, default)
     answer = questionary.confirm(
-        message,
+        formatted_message,
         default=default,
         instruction=instruction,
         style=STYLE,
+        auto_enter=False,
     ).ask()
     if answer is None:
         raise KeyboardInterrupt
