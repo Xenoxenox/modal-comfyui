@@ -12,9 +12,9 @@ Run ComfyUI on Modal with two modes: **Web UI** (browser-based workflow design) 
 uv sync                        # install dependencies (modal + questionary + rich)
 modal setup                    # authenticate with Modal (one-time)
 python manage.py               # interactive manager for config, prepare, GPU, volumes
-python serve.py                # dev Web UI — auto-cleans old apps, logs to logs/modal_serve_[timestamp].log
+python serve.py --gpu L4       # dev Web UI — auto-cleans old apps, logs to logs/modal_serve_[timestamp].log
 modal serve server/ui.py       # dev Web UI (manual)
-modal deploy server/ui.py      # production Web UI — persistent endpoint
+python -m scripts.deploy_ui --gpu L4  # production Web UI — persistent endpoint
 python -m client.infer         # headless inference — interactive GPU/workflow selection
 python -m client.watch <url>   # local watcher — download new Web UI outputs into output/
 python -m scripts.manage_volumes  # manage Modal Volumes (list/clean)
@@ -53,10 +53,10 @@ Set either env var to an empty string, `none`, or `false` to skip mounting that 
 
 ## Windows / Encoding Notes
 
-`modal serve` outputs Unicode (✓ ✨) that breaks Windows GBK terminal. Always launch via `serve.py` or with env vars:
+`modal serve` outputs Unicode (✓ ✨) that breaks Windows GBK terminal. Prefer the local launcher:
 
 ```bash
-python serve.py   # recommended — handles encoding + auto-cleans stuck apps
+python serve.py --gpu L4   # handles encoding + auto-cleans stuck apps
 ```
 
 If a `modal serve` gets stuck on `Running app...`, a previous ephemeral app is blocking the slot:
@@ -64,7 +64,7 @@ If a `modal serve` gets stuck on `Running app...`, a previous ephemeral app is b
 ```bash
 modal app list                    # find ephemeral app ID
 modal app stop <app-id>           # stop it
-python serve.py                   # restart
+python serve.py --gpu L4           # restart
 ```
 
 ## Architecture
@@ -85,7 +85,7 @@ modal-comfyui/
 │   └── loader.py        # load_config(), save_config(), to_legacy()
 ├── scripts/
 │   └── manage_volumes.py  # Volume listing and cleanup
-├── serve.py             # Convenience launcher: cleans stuck apps + starts modal serve
+├── serve.py             # Convenience launcher: selects GPU, cleans stuck apps, starts modal serve
 ├── workflows/           # Workflow JSON files (copied into image at build time)
 │   └── newbie-official.json  # NewBie image Exp0.1 official workflow
 ├── config.toml          # (gitignored) Models + plugins config
@@ -156,7 +156,7 @@ node_id = "comfyui-my-nodes"   # or use repo = "https://github.com/..."
 ### Web UI (`server/ui.py`)
 
 - `@modal.web_server(8000)` serving ComfyUI on port 8000 via `comfy launch --background`
-- Web UI GPU defaults to `L4`; local launchers can set `COMFYUI_WEB_GPU` before `modal serve`/`modal deploy`
+- Web UI GPU defaults to `L4`; use `python serve.py --gpu <GPU>` or `python -m scripts.deploy_ui --gpu <GPU>` instead of setting env vars manually
 - GPU snapshots (`enable_gpu_snapshot`) for faster cold starts — **only works with `modal deploy`, not `modal serve`**
 - Scales to zero after 60s idle (`scaledown_window`)
 - output_vol is imported but **not yet mounted** — generated images currently stay in the container and are lost on scale-down

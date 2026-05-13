@@ -735,13 +735,17 @@ def _deploy(cfg: Config) -> None:
         print_result_panel(
             "[bold blue]Web UI Deploy[/bold blue]",
             [
-                ("Command", "modal deploy server/ui.py"),
+                ("Command", f"python -m scripts.deploy_ui --gpu {gpu_choice}"),
                 ("GPU", gpu_choice),
                 ("Models", "Use Prepare models first if cache links are missing."),
             ],
             border_style="blue",
         )
-        subprocess.run(["modal", "deploy", "server/ui.py"], env=_modal_env(gpu_choice), check=True)
+        subprocess.run(
+            [sys.executable, "-m", "scripts.deploy_ui", "--gpu", gpu_choice],
+            env=_modal_env(),
+            check=True,
+        )
     elif action == "prepare":
         dry_run = ask_confirm(
             "Dry run only?",
@@ -778,13 +782,17 @@ def _deploy(cfg: Config) -> None:
         print_result_panel(
             "[bold blue]Web UI Dev Serve[/bold blue]",
             [
-                ("Command", "python serve.py"),
+                ("Command", f"python serve.py --gpu {gpu_choice}"),
                 ("GPU", gpu_choice),
                 ("Encoding", "UTF-8 environment enabled"),
             ],
             border_style="blue",
         )
-        subprocess.run([sys.executable, "serve.py"], env=_modal_env(gpu_choice), check=True)
+        subprocess.run(
+            [sys.executable, "serve.py", "--gpu", gpu_choice],
+            env=_modal_env(),
+            check=True,
+        )
 
 
 # ── Main Menu ──

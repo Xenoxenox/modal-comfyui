@@ -70,22 +70,21 @@ python manage.py
 
 Run the following command to start ComfyUI in development mode:
 ```bash
-modal serve server/ui.py
+python serve.py --gpu L4
 ```
 This will provide a temporary URL where you can access the ComfyUI interface.
-The Web UI uses `L4` by default. To choose another GPU without the manager:
+Choose another GPU by changing the argument:
 ```bash
-COMFYUI_WEB_GPU=L40S modal serve server/ui.py
+python serve.py --gpu L40S
 ```
-On PowerShell, set `$env:COMFYUI_WEB_GPU="L40S"` before running `modal serve` or `modal deploy`.
 
 ### Web UI — Deploy (Production)
 
 To deploy ComfyUI as a persistent app:
 ```bash
-modal deploy server/ui.py
+python -m scripts.deploy_ui --gpu L4
 ```
-`python manage.py` can prompt for the Web UI GPU before running deploy. For direct CLI use, set `COMFYUI_WEB_GPU` in the environment.
+`python manage.py` can also prompt for the Web UI GPU before running serve or deploy.
 
 ### Headless Inference
 
