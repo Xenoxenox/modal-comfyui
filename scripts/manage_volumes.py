@@ -29,6 +29,7 @@ except ImportError:
     print("modal is required. Run: uv sync")
     raise
 
+from rich.table import Table
 from rich.tree import Tree
 
 from scripts.tui import (
@@ -631,8 +632,76 @@ def clean_output_sessions() -> None:
     )
 
 
-def delete_remote_model_files() -> None:
+def _model_delete_label(model: PreparedModelFile, orphan_cache_paths: set[str]) -> str:
+    size = _format_size(model.size)
+    cache_label = _compact_cache_path(model.cache_path)
+    target = f"{model.model_dir}/{model.display_name}"
+    if model.cache_path in orphan_cache_paths:
+        return f"[ORPHAN] {target}  {size}  {cache_label}"
+    return f"{target}  {size}  {cache_label}"
+
+
+def _print_orphan_prune_table(models: list[PreparedModelFile]) -> None:
+    table = Table(title="Orphaned prepared model files", show_lines=False)
+    table.add_column("Source", style="dim", no_wrap=True)
+    table.add_column("Target", style="white")
+    table.add_column("Size", justify="right")
+    table.add_column("Cache", style="dim")
+    for model in sorted(models, key=lambda item: (item.model_dir, item.display_name)):
+        table.add_row(
+            model.source or "-",
+            f"{model.model_dir}/{model.display_name}",
+            _format_size(model.size),
+            _compact_cache_path(model.cache_path),
+        )
+    console.print(table)
+
+
+def prune_orphan_model_files(orphan_cache_paths: set[str] | None = None) -> set[str]:
+    """Delete prepared model files that no longer map to config.toml entries."""
+    orphan_cache_paths = set(orphan_cache_paths or ())
+    if not orphan_cache_paths:
+        print_status("No orphaned prepared model files detected.", style="green")
+        return orphan_cache_paths
+
+    try:
+        models = list_prepared_model_files(include_sizes=True)
+    except Exception as exc:
+        print_status(f"Read prepared model manifest failed: {exc}", style="red")
+        return orphan_cache_paths
+
+    orphans = [model for model in models if model.cache_path in orphan_cache_paths]
+    if not orphans:
+        print_status("No orphaned prepared model files detected.", style="green")
+        return orphan_cache_paths
+
+    _print_orphan_prune_table(orphans)
+    if not ask_confirm(
+        f"Prune {len(orphans)} orphaned model file(s) from {CACHE_VOLUME}?",
+        default=False,
+        instruction="This removes only prepared cache files that are no longer referenced by config.toml.",
+    ):
+        return orphan_cache_paths
+
+    selected = [model.cache_path for model in orphans]
+    removed, failed = remove_volume_model_files(selected)
+    orphan_cache_paths.difference_update(removed)
+    print_result_panel(
+        "[bold green]Orphan Prune Complete[/bold green]",
+        [
+            ("Deleted", len(removed)),
+            ("Failed", len(failed) or None),
+            ("Volume", CACHE_VOLUME),
+        ],
+    )
+    for cache_path, error in failed[:5]:
+        console.print(f"[red]Failed:[/] {cache_path} [dim]{error}[/]")
+    return orphan_cache_paths
+
+
+def delete_remote_model_files(orphan_cache_paths: set[str] | None = None) -> None:
     """Interactively delete prepared model files from comfy-cache."""
+    orphan_cache_paths = set(orphan_cache_paths or ())
     try:
         models = list_prepared_model_files(include_sizes=True)
     except Exception as exc:
@@ -645,8 +714,7 @@ def delete_remote_model_files() -> None:
 
     choices = []
     for model in sorted(models, key=lambda item: (item.model_dir, item.display_name)):
-        size = _format_size(model.size)
-        label = f"{model.model_dir}/{model.display_name}  {size}  {_compact_cache_path(model.cache_path)}"
+        label = _model_delete_label(model, orphan_cache_paths)
         choices.append(questionary.Choice(label, value=model.cache_path))
 
     selected = questionary.checkbox(
@@ -678,43 +746,55 @@ def delete_remote_model_files() -> None:
         console.print(f"[red]Failed:[/] {cache_path} [dim]{error}[/]")
 
 
-def volume_management_menu() -> None:
+def volume_management_menu(orphan_cache_paths: set[str] | None = None) -> None:
+    orphan_cache_paths = set(orphan_cache_paths or ())
     while True:
+        choices = [
+            questionary.Choice(
+                "List comfy-cache",
+                value=("list", CACHE_VOLUME),
+                description="Tree view using cached recursive usage when available.",
+            ),
+            questionary.Choice(
+                "Refresh comfy-cache usage",
+                value=("refresh", CACHE_VOLUME),
+                description="Run recursive usage scan and cache the result.",
+            ),
+            questionary.Choice(
+                "List comfy-output",
+                value=("list", OUTPUT_VOLUME),
+                description="Output tree using cached recursive usage when available.",
+            ),
+            questionary.Choice(
+                "Refresh comfy-output usage",
+                value=("refresh", OUTPUT_VOLUME),
+                description="Run recursive usage scan and cache the result.",
+            ),
+            questionary.Choice(
+                "Delete remote model files",
+                value=("delete-models", CACHE_VOLUME),
+                description="Delete selected prepared model files from comfy-cache.",
+            ),
+        ]
+        if orphan_cache_paths:
+            choices.append(
+                questionary.Choice(
+                    f"Prune orphaned models ({len(orphan_cache_paths)})",
+                    value=("prune-orphans", CACHE_VOLUME),
+                    description="Delete prepared model files no longer referenced by config.toml.",
+                )
+            )
+        choices.extend([
+            questionary.Choice(
+                "Clean comfy-output sessions",
+                value=("clean", OUTPUT_VOLUME),
+                description="Delete selected old output session directories.",
+            ),
+            questionary.Choice("Back", value=("back", "")),
+        ])
         action = ask_select(
             "Volume action:",
-            choices=[
-                questionary.Choice(
-                    "List comfy-cache",
-                    value=("list", CACHE_VOLUME),
-                    description="Tree view using cached recursive usage when available.",
-                ),
-                questionary.Choice(
-                    "Refresh comfy-cache usage",
-                    value=("refresh", CACHE_VOLUME),
-                    description="Run recursive usage scan and cache the result.",
-                ),
-                questionary.Choice(
-                    "List comfy-output",
-                    value=("list", OUTPUT_VOLUME),
-                    description="Output tree using cached recursive usage when available.",
-                ),
-                questionary.Choice(
-                    "Refresh comfy-output usage",
-                    value=("refresh", OUTPUT_VOLUME),
-                    description="Run recursive usage scan and cache the result.",
-                ),
-                questionary.Choice(
-                    "Delete remote model files",
-                    value=("delete-models", CACHE_VOLUME),
-                    description="Delete selected prepared model files from comfy-cache.",
-                ),
-                questionary.Choice(
-                    "Clean comfy-output sessions",
-                    value=("clean", OUTPUT_VOLUME),
-                    description="Delete selected old output session directories.",
-                ),
-                questionary.Choice("Back", value=("back", "")),
-            ],
+            choices=choices,
         )
 
         kind, volume_name = action
@@ -725,7 +805,9 @@ def volume_management_menu() -> None:
         elif kind == "refresh":
             print_volume_contents(volume_name, refresh_usage=True)
         elif kind == "delete-models":
-            delete_remote_model_files()
+            delete_remote_model_files(orphan_cache_paths=orphan_cache_paths)
+        elif kind == "prune-orphans":
+            orphan_cache_paths = prune_orphan_model_files(orphan_cache_paths=orphan_cache_paths)
         elif kind == "clean":
             clean_output_sessions()
 

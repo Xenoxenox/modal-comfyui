@@ -542,6 +542,13 @@ def _add_snapshot_model(cfg: Config) -> None:
 
 def _list_models(cfg: Config) -> None:
     if not cfg.models:
+        orphan_count = len(_orphan_prepared_model_files(cfg, include_sizes=False))
+        if orphan_count:
+            console.print(
+                f"\n[bold white]Models[/] [dim](0 configured)[/] "
+                f"[bold yellow]![/] [dim]{orphan_count} orphan"
+                f"{'' if orphan_count == 1 else 's'} detected in cloud[/]"
+            )
         print(f"  {D}No models configured.{RST}")
         return
 
@@ -575,7 +582,17 @@ def _list_models(cfg: Config) -> None:
         bundles[spec.bundle].append((key, spec))
 
     total = sum(len(items) for items in bundles.values())
-    console.print(f"\n[bold white]Models[/] [dim]({total} shown / {len(cfg.models)} total)[/]")
+    orphan_count = len(_orphan_prepared_model_files(cfg, include_sizes=False))
+    orphan_notice = (
+        f" [bold yellow]![/] [dim]{orphan_count} orphan"
+        f"{'' if orphan_count == 1 else 's'} detected in cloud[/]"
+        if orphan_count
+        else ""
+    )
+    console.print(
+        f"\n[bold white]Models[/] [dim]({total} shown / {len(cfg.models)} total)[/]"
+        f"{orphan_notice}"
+    )
     console.print("[dim][F] Filter  [R] Refresh  [D] Delete  [B] Back[/]")
 
     for bundle_name in sorted(bundles, key=lambda x: (x is None, x or "")):
@@ -625,7 +642,40 @@ def _model_target_suffix(spec: ModelSpec) -> str | None:
         if not spec.model_dir or not spec.filename:
             return None
         return f"/models/{spec.model_dir}/{spec.save_as or Path(spec.filename).name}"
+    if spec.source == ModelSource.HUGGINGFACE_SNAPSHOT:
+        if not spec.target_dir:
+            return None
+        target = PurePosixPath(str(spec.target_dir).replace("\\", "/"))
+        if target.is_absolute():
+            return target.as_posix()
+        return f"/models/{target.as_posix()}"
     return None
+
+
+def _configured_model_target_suffixes(cfg: Config) -> set[str]:
+    return {
+        suffix
+        for spec in cfg.models.values()
+        if (suffix := _model_target_suffix(spec)) is not None
+    }
+
+
+def _target_matches_config(target_path: str, suffixes: set[str]) -> bool:
+    return any(target_path.endswith(suffix) for suffix in suffixes)
+
+
+def _orphan_prepared_model_files(cfg: Config, *, include_sizes: bool = True) -> list:
+    suffixes = _configured_model_target_suffixes(cfg)
+    try:
+        prepared = list_prepared_model_files(include_sizes=include_sizes)
+    except Exception as exc:
+        console.print(f"[yellow]Could not read prepared model manifest:[/] {exc}")
+        return []
+    return [
+        item
+        for item in prepared
+        if item.target_path and not _target_matches_config(item.target_path, suffixes)
+    ]
 
 
 def _remote_cache_paths_for_models(cfg: Config, keys: list[str]) -> dict[str, list[str]]:
@@ -1101,7 +1151,12 @@ def main() -> None:
             _deploy(cfg)
         elif choice == "volumes":
             print_step("Main > Volumes")
-            volume_management_menu()
+            orphan_cache_paths = {
+                item.cache_path
+                for item in _orphan_prepared_model_files(cfg, include_sizes=False)
+                if item.cache_path
+            }
+            volume_management_menu(orphan_cache_paths=orphan_cache_paths)
 
     console.print("\n[bold green]Done.[/bold green]\n")
 
