@@ -518,7 +518,11 @@ def get_volume_usage(
         if cached:
             return cached
         return None
-    usage = calculate_volume_usage(volume_name, path, recursive=True)
+    with console.status(
+        f"[bold blue]Scanning {volume_name} recursively...[/] [dim]This can take a few minutes.[/]",
+        spinner="dots",
+    ):
+        usage = calculate_volume_usage(volume_name, path, recursive=True)
     save_cached_usage(volume_name, path, usage)
     return usage
 
@@ -758,7 +762,7 @@ def volume_management_menu(orphan_cache_paths: set[str] | None = None) -> None:
             questionary.Choice(
                 "Refresh comfy-cache usage",
                 value=("refresh", CACHE_VOLUME),
-                description="Run recursive usage scan and cache the result.",
+                description="Run a recursive scan; this can take a few minutes on large caches.",
             ),
             questionary.Choice(
                 "List comfy-output",
