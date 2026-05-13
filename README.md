@@ -97,7 +97,7 @@ Place your ComfyUI API-format workflow JSON files in the `workflows/` directory.
 
 ### Volume Management
 
-List cached models as a grouped Rich tree, inspect approximate usage, or clean up old inference sessions:
+List cached models as a grouped Rich tree, inspect cached recursive usage, or clean up old inference sessions:
 ```bash
 python -m scripts.manage_volumes
 ```
@@ -106,6 +106,7 @@ Non-interactive list checks are also available:
 python -m scripts.manage_volumes list --volume comfy-cache
 python -m scripts.manage_volumes list --volume comfy-output
 ```
+Use `--refresh-usage` when you want to recalculate recursive size accounting; otherwise the last local scan is reused.
 The usage bar uses Modal's current 1 TiB/month included Volume storage as a pricing reference, not as a hard capacity limit.
 
 ## Features

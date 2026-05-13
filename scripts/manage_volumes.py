@@ -4,6 +4,7 @@ Usage:
     python -m scripts.manage_volumes
     python -m scripts.manage_volumes list
     python -m scripts.manage_volumes list --volume comfy-cache --path /
+    python -m scripts.manage_volumes list --volume comfy-cache --refresh-usage
 """
 
 from __future__ import annotations
@@ -12,7 +13,8 @@ import argparse
 import json
 import sys
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 try:
@@ -44,6 +46,7 @@ OUTPUT_VOLUME = "comfy-output"
 KNOWN_VOLUMES = (CACHE_VOLUME, OUTPUT_VOLUME)
 MODEL_LINK_MANIFEST = "/.modal-comfyui-model-links.json"
 FREE_TIER_REFERENCE_BYTES = 1024**4
+USAGE_CACHE_PATH = Path(".cache") / "modal-comfyui" / "volume_usage.json"
 
 SOURCE_BADGES = {
     "huggingface": "[white on blue] HU [/]",
@@ -58,6 +61,16 @@ class VolumeEntry:
     path: str
     type: str
     size: int | None = None
+
+
+@dataclass(frozen=True)
+class VolumeUsage:
+    total_size: int
+    file_count: int
+    dir_count: int
+    errors: tuple[str, ...] = ()
+    refreshed_at: str | None = None
+    source: str = "fresh"
 
 
 def _volume_description(volume_name: str) -> str:
@@ -203,7 +216,128 @@ def list_volume_entries(volume_name: str, path: str = "/") -> list[VolumeEntry]:
     return entries
 
 
-def print_volume_contents(volume_name: str, path: str = "/") -> None:
+def _join_volume_path(parent: str, child: str) -> str:
+    if child.startswith("/"):
+        return child
+    if parent == "/":
+        return f"/{child}"
+    return f"{parent.rstrip('/')}/{PurePosixPath(child).name}"
+
+
+def calculate_volume_usage(
+    volume_name: str,
+    path: str = "/",
+    *,
+    recursive: bool = True,
+) -> VolumeUsage:
+    """Calculate file bytes under a Volume path.
+
+    Modal directory entry sizes are directory metadata, not recursive contents.
+    Only file entries are counted as storage usage.
+    """
+    total_size = 0
+    file_count = 0
+    dir_count = 0
+    errors: list[str] = []
+    stack = [path]
+
+    while stack:
+        current = stack.pop()
+        try:
+            entries = list_volume_entries(volume_name, current)
+        except Exception as exc:
+            errors.append(f"{current}: {exc}")
+            continue
+
+        for entry in entries:
+            if entry.type == "dir":
+                dir_count += 1
+                if recursive:
+                    stack.append(_join_volume_path(current, entry.path))
+                continue
+            file_count += 1
+            total_size += entry.size or 0
+
+        if not recursive:
+            break
+
+    return VolumeUsage(
+        total_size=total_size,
+        file_count=file_count,
+        dir_count=dir_count,
+        errors=tuple(errors),
+        refreshed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        source="fresh",
+    )
+
+
+def _usage_cache_key(volume_name: str, path: str) -> str:
+    return f"{volume_name}:{path}"
+
+
+def _read_usage_cache() -> dict[str, Any]:
+    try:
+        return json.loads(USAGE_CACHE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_usage_cache(cache: dict[str, Any]) -> None:
+    USAGE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    USAGE_CACHE_PATH.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+
+
+def load_cached_usage(volume_name: str, path: str = "/") -> VolumeUsage | None:
+    raw = _read_usage_cache().get(_usage_cache_key(volume_name, path))
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return VolumeUsage(
+            total_size=int(raw["total_size"]),
+            file_count=int(raw["file_count"]),
+            dir_count=int(raw["dir_count"]),
+            errors=tuple(str(item) for item in raw.get("errors", [])),
+            refreshed_at=str(raw.get("refreshed_at") or ""),
+            source="cache",
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def save_cached_usage(volume_name: str, path: str, usage: VolumeUsage) -> None:
+    cache = _read_usage_cache()
+    cache[_usage_cache_key(volume_name, path)] = {
+        "total_size": usage.total_size,
+        "file_count": usage.file_count,
+        "dir_count": usage.dir_count,
+        "errors": list(usage.errors),
+        "refreshed_at": usage.refreshed_at,
+    }
+    _write_usage_cache(cache)
+
+
+def get_volume_usage(
+    volume_name: str,
+    path: str = "/",
+    *,
+    refresh: bool = False,
+) -> VolumeUsage | None:
+    if not refresh:
+        cached = load_cached_usage(volume_name, path)
+        if cached:
+            return cached
+        return None
+    usage = calculate_volume_usage(volume_name, path, recursive=True)
+    save_cached_usage(volume_name, path, usage)
+    return usage
+
+
+def print_volume_contents(
+    volume_name: str,
+    path: str = "/",
+    *,
+    refresh_usage: bool = False,
+) -> None:
     """List contents of a Modal Volume with a readable table."""
     print_result_panel(
         "[bold blue]Volume[/bold blue]",
@@ -224,16 +358,34 @@ def print_volume_contents(volume_name: str, path: str = "/") -> None:
         print_status("No entries found.", style="yellow")
         return
 
-    total_size = sum(entry.size or 0 for entry in entries)
-    print_result_panel(
-        "[bold blue]Usage Reference[/bold blue]",
-        [
-            ("Listed bytes", _format_size(total_size)),
-            ("1 TiB reference", _usage_bar(total_size)),
-            ("Note", "Modal pricing currently includes 1 TiB/mo free storage."),
-        ],
-        border_style="cyan",
-    )
+    usage = get_volume_usage(volume_name, path, refresh=refresh_usage)
+    if usage:
+        label = "Recursive file bytes" if usage.source == "fresh" else "Cached recursive bytes"
+        print_result_panel(
+            "[bold blue]Usage Reference[/bold blue]",
+            [
+                (label, _format_size(usage.total_size)),
+                ("Files", usage.file_count),
+                ("Directories scanned", usage.dir_count),
+                ("Refreshed", usage.refreshed_at),
+                ("Scan errors", len(usage.errors) or None),
+                ("1 TiB reference", _usage_bar(usage.total_size)),
+                ("Note", "Modal pricing currently includes 1 TiB/mo free storage."),
+            ],
+            border_style="cyan",
+        )
+        for error in usage.errors[:5]:
+            console.print(f"[yellow]Usage scan skipped:[/] {error}")
+    else:
+        print_result_panel(
+            "[bold yellow]Usage Reference[/bold yellow]",
+            [
+                ("Recursive bytes", "not scanned yet"),
+                ("Action", "Run refresh usage to calculate and cache accurate size."),
+                ("Note", "Modal pricing currently includes 1 TiB/mo free storage."),
+            ],
+            border_style="yellow",
+        )
 
     if volume_name == CACHE_VOLUME and path == "/" and print_model_link_tree():
         return
@@ -297,12 +449,22 @@ def volume_management_menu() -> None:
                 questionary.Choice(
                     "List comfy-cache",
                     value=("list", CACHE_VOLUME),
-                    description=_volume_description(CACHE_VOLUME),
+                    description="Tree view using cached recursive usage when available.",
+                ),
+                questionary.Choice(
+                    "Refresh comfy-cache usage",
+                    value=("refresh", CACHE_VOLUME),
+                    description="Run recursive usage scan and cache the result.",
                 ),
                 questionary.Choice(
                     "List comfy-output",
                     value=("list", OUTPUT_VOLUME),
-                    description=_volume_description(OUTPUT_VOLUME),
+                    description="Output tree using cached recursive usage when available.",
+                ),
+                questionary.Choice(
+                    "Refresh comfy-output usage",
+                    value=("refresh", OUTPUT_VOLUME),
+                    description="Run recursive usage scan and cache the result.",
                 ),
                 questionary.Choice(
                     "Clean comfy-output sessions",
@@ -318,6 +480,8 @@ def volume_management_menu() -> None:
             break
         if kind == "list":
             print_volume_contents(volume_name)
+        elif kind == "refresh":
+            print_volume_contents(volume_name, refresh_usage=True)
         elif kind == "clean":
             clean_output_sessions()
 
@@ -338,6 +502,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default="/",
         help="Volume path to list. Defaults to /.",
     )
+    list_parser.add_argument(
+        "--refresh-usage",
+        action="store_true",
+        help="Run recursive size scan and update the local usage cache.",
+    )
     return parser
 
 
@@ -346,7 +515,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "list":
-        print_volume_contents(args.volume, args.path)
+        print_volume_contents(args.volume, args.path, refresh_usage=args.refresh_usage)
         return 0
 
     print_banner(
