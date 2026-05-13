@@ -5,6 +5,7 @@ Usage:
     python -m scripts.manage_volumes list
     python -m scripts.manage_volumes list --volume comfy-cache --path /
     python -m scripts.manage_volumes list --volume comfy-cache --refresh-usage
+    python -m scripts.manage_volumes list --volume comfy-cache --refresh-model-sizes
 """
 
 from __future__ import annotations
@@ -47,6 +48,7 @@ KNOWN_VOLUMES = (CACHE_VOLUME, OUTPUT_VOLUME)
 MODEL_LINK_MANIFEST = "/.modal-comfyui-model-links.json"
 FREE_TIER_REFERENCE_BYTES = 1024**4
 USAGE_CACHE_PATH = Path(".cache") / "modal-comfyui" / "volume_usage.json"
+MODEL_SIZE_CACHE_PATH = Path(".cache") / "modal-comfyui" / "model_file_sizes.json"
 
 SOURCE_BADGES = {
     "huggingface": "[white on blue] HU [/]",
@@ -54,6 +56,16 @@ SOURCE_BADGES = {
     "external": "[white on magenta] EX [/]",
     "local": "[black on green] LO [/]",
 }
+
+
+@dataclass(frozen=True)
+class PreparedModelFile:
+    source: str
+    cache_path: str
+    target_path: str
+    model_dir: str
+    display_name: str
+    size: int | None = None
 
 
 @dataclass(frozen=True)
@@ -132,6 +144,14 @@ def _entry_label(entry: VolumeEntry) -> str:
     return f"[white]{name}[/] [dim]{size}[/]{usage}"
 
 
+def _cache_to_volume_path(cache_path: str) -> str:
+    if cache_path.startswith("/cache/"):
+        return "/" + cache_path.removeprefix("/cache/")
+    if cache_path == "/cache":
+        return "/"
+    return cache_path if cache_path.startswith("/") else f"/{cache_path}"
+
+
 def _read_volume_text(volume_name: str, path: str) -> str:
     vol = modal.Volume.from_name(volume_name)
     data = vol.read_file(path)
@@ -173,32 +193,134 @@ def _compact_cache_path(cache_path: str) -> str:
     return path.name or cache_path
 
 
-def print_model_link_tree() -> bool:
+def _volume_file_size(volume_name: str, path: str) -> int | None:
+    volume_path = PurePosixPath(path)
+    parent = volume_path.parent.as_posix()
+    if parent == ".":
+        parent = "/"
+    name = volume_path.name
+    try:
+        entries = list_volume_entries(volume_name, parent)
+    except Exception:
+        return None
+    for entry in entries:
+        if PurePosixPath(entry.path).name == name and entry.type != "dir":
+            return entry.size
+    return None
+
+
+def _read_model_size_cache() -> dict[str, Any]:
+    try:
+        return json.loads(MODEL_SIZE_CACHE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_model_size_cache(cache: dict[str, Any]) -> None:
+    MODEL_SIZE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    MODEL_SIZE_CACHE_PATH.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+
+
+def refresh_prepared_model_size_cache() -> dict[str, int]:
+    from server.app import app, inspect_prepared_model_files
+
+    sizes: dict[str, int] = {}
+    with app.run():
+        items = inspect_prepared_model_files.remote()
+    for item in items:
+        cache_path = str(item.get("cache_path", ""))
+        size = item.get("size")
+        if cache_path and isinstance(size, int):
+            sizes[cache_path] = size
+    _write_model_size_cache({
+        "refreshed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "sizes": sizes,
+    })
+    return sizes
+
+
+def _cached_model_sizes() -> dict[str, int]:
+    raw = _read_model_size_cache().get("sizes", {})
+    if not isinstance(raw, dict):
+        return {}
+    result: dict[str, int] = {}
+    for key, value in raw.items():
+        if isinstance(key, str) and isinstance(value, int):
+            result[key] = value
+    return result
+
+
+def list_prepared_model_files(
+    *,
+    include_sizes: bool = True,
+    refresh_sizes: bool = False,
+) -> list[PreparedModelFile]:
+    items = _load_model_manifest()
+    cached_sizes = refresh_prepared_model_size_cache() if refresh_sizes else _cached_model_sizes()
+    result: list[PreparedModelFile] = []
+    for item in items:
+        cache_path = str(item.get("cache_path", ""))
+        target_path = str(item.get("target_path", ""))
+        model_dir, name = _model_dir_from_target(target_path)
+        size = None
+        if include_sizes and cache_path:
+            size = cached_sizes.get(cache_path)
+            if size is None and refresh_sizes:
+                size = _volume_file_size(CACHE_VOLUME, _cache_to_volume_path(cache_path))
+        result.append(
+            PreparedModelFile(
+                source=str(item.get("source", "")),
+                cache_path=cache_path,
+                target_path=target_path,
+                model_dir=model_dir,
+                display_name=name,
+                size=size,
+            )
+        )
+    return result
+
+
+def print_model_link_tree(*, refresh_sizes: bool = False) -> bool:
     """Print prepared model links grouped by ComfyUI model directory."""
     try:
-        items = _load_model_manifest()
+        items = list_prepared_model_files(include_sizes=True, refresh_sizes=refresh_sizes)
     except Exception:
         return False
 
     if not items:
         return False
 
-    grouped: dict[str, list[dict[str, Any]]] = {}
+    grouped: dict[str, list[PreparedModelFile]] = {}
     for item in items:
-        model_dir, name = _model_dir_from_target(str(item.get("target_path", "")))
-        grouped.setdefault(model_dir, []).append({**item, "display_name": name})
+        grouped.setdefault(item.model_dir, []).append(item)
 
     root = Tree("[bold blue]comfy-cache prepared model links[/]")
     for model_dir in sorted(grouped):
         branch = root.add(f"[bold cyan]{model_dir}/[/]")
-        for item in sorted(grouped[model_dir], key=lambda x: str(x["display_name"])):
-            source = str(item.get("source", ""))
-            badge = SOURCE_BADGES.get(source, "[white on grey23] ?? [/]")
-            name = str(item["display_name"])
-            cache_path = str(item.get("cache_path", ""))
-            branch.add(f"{badge} [white]{name}[/] [dim]{_compact_cache_path(cache_path)}[/]")
+        for item in sorted(grouped[model_dir], key=lambda x: x.display_name):
+            badge = SOURCE_BADGES.get(item.source, "[white on grey23] ?? [/]")
+            size = f" [bold]{_format_size(item.size)}[/]" if item.size is not None else ""
+            branch.add(
+                f"{badge} [white]{item.display_name}[/]{size} "
+                f"[dim]{_compact_cache_path(item.cache_path)}[/]"
+            )
     console.print(root)
     return True
+
+
+def remove_volume_model_files(cache_paths: list[str]) -> tuple[list[str], list[tuple[str, str]]]:
+    """Remove selected model files from comfy-cache by cache_path."""
+    vol = modal.Volume.from_name(CACHE_VOLUME)
+    removed: list[str] = []
+    failed: list[tuple[str, str]] = []
+    for cache_path in cache_paths:
+        volume_path = _cache_to_volume_path(cache_path)
+        try:
+            vol.remove_file(volume_path, recursive=False)
+            removed.append(cache_path)
+        except Exception as exc:
+            failed.append((cache_path, str(exc)))
+    return removed, failed
 
 
 def list_volume_entries(volume_name: str, path: str = "/") -> list[VolumeEntry]:
@@ -337,6 +459,7 @@ def print_volume_contents(
     path: str = "/",
     *,
     refresh_usage: bool = False,
+    refresh_model_sizes: bool = False,
 ) -> None:
     """List contents of a Modal Volume with a readable table."""
     print_result_panel(
@@ -387,7 +510,11 @@ def print_volume_contents(
             border_style="yellow",
         )
 
-    if volume_name == CACHE_VOLUME and path == "/" and print_model_link_tree():
+    if (
+        volume_name == CACHE_VOLUME
+        and path == "/"
+        and print_model_link_tree(refresh_sizes=refresh_model_sizes)
+    ):
         return
 
     root = Tree(f"[bold blue]{volume_name}:{path}[/]")
@@ -441,6 +568,53 @@ def clean_output_sessions() -> None:
     )
 
 
+def delete_remote_model_files() -> None:
+    """Interactively delete prepared model files from comfy-cache."""
+    try:
+        models = list_prepared_model_files(include_sizes=True)
+    except Exception as exc:
+        print_status(f"Read prepared model manifest failed: {exc}", style="red")
+        return
+
+    if not models:
+        print_status("No prepared model manifest entries found.", style="yellow")
+        return
+
+    choices = []
+    for model in sorted(models, key=lambda item: (item.model_dir, item.display_name)):
+        size = _format_size(model.size)
+        label = f"{model.model_dir}/{model.display_name}  {size}  {_compact_cache_path(model.cache_path)}"
+        choices.append(questionary.Choice(label, value=model.cache_path))
+
+    selected = questionary.checkbox(
+        "Select remote model files to delete from comfy-cache:",
+        choices=choices,
+        style=STYLE,
+    ).ask()
+    if not selected:
+        print_status("No remote model files selected.", style="yellow")
+        return
+
+    if not ask_confirm(
+        f"Delete {len(selected)} remote model file(s) from {CACHE_VOLUME}?",
+        default=False,
+        instruction="This removes only the cached files, not config.toml entries.",
+    ):
+        return
+
+    removed, failed = remove_volume_model_files(list(selected))
+    print_result_panel(
+        "[bold green]Remote Delete Complete[/bold green]",
+        [
+            ("Removed", len(removed)),
+            ("Failed", len(failed) or None),
+            ("Volume", CACHE_VOLUME),
+        ],
+    )
+    for cache_path, error in failed[:5]:
+        console.print(f"[red]Failed:[/] {cache_path} [dim]{error}[/]")
+
+
 def volume_management_menu() -> None:
     while True:
         action = ask_select(
@@ -457,6 +631,11 @@ def volume_management_menu() -> None:
                     description="Run recursive usage scan and cache the result.",
                 ),
                 questionary.Choice(
+                    "Refresh comfy-cache model file sizes",
+                    value=("refresh-model-sizes", CACHE_VOLUME),
+                    description="Resolve symlink target sizes for the model tree.",
+                ),
+                questionary.Choice(
                     "List comfy-output",
                     value=("list", OUTPUT_VOLUME),
                     description="Output tree using cached recursive usage when available.",
@@ -465,6 +644,11 @@ def volume_management_menu() -> None:
                     "Refresh comfy-output usage",
                     value=("refresh", OUTPUT_VOLUME),
                     description="Run recursive usage scan and cache the result.",
+                ),
+                questionary.Choice(
+                    "Delete remote model files",
+                    value=("delete-models", CACHE_VOLUME),
+                    description="Delete selected prepared model files from comfy-cache.",
                 ),
                 questionary.Choice(
                     "Clean comfy-output sessions",
@@ -482,6 +666,10 @@ def volume_management_menu() -> None:
             print_volume_contents(volume_name)
         elif kind == "refresh":
             print_volume_contents(volume_name, refresh_usage=True)
+        elif kind == "refresh-model-sizes":
+            print_volume_contents(volume_name, refresh_model_sizes=True)
+        elif kind == "delete-models":
+            delete_remote_model_files()
         elif kind == "clean":
             clean_output_sessions()
 
@@ -507,6 +695,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run recursive size scan and update the local usage cache.",
     )
+    list_parser.add_argument(
+        "--refresh-model-sizes",
+        action="store_true",
+        help="Refresh symlink-resolved model file sizes for the comfy-cache tree.",
+    )
     return parser
 
 
@@ -515,7 +708,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "list":
-        print_volume_contents(args.volume, args.path, refresh_usage=args.refresh_usage)
+        print_volume_contents(
+            args.volume,
+            args.path,
+            refresh_usage=args.refresh_usage,
+            refresh_model_sizes=args.refresh_model_sizes,
+        )
         return 0
 
     print_banner(

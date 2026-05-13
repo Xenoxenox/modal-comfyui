@@ -407,6 +407,38 @@ def prepare_models(dry_run: bool = False, force: bool = False) -> dict[str, Any]
     return summary
 
 
+@app.function(
+    volumes={CACHE_MOUNT: cache_vol},
+    timeout=10 * 60,
+)
+def inspect_prepared_model_files() -> list[dict[str, Any]]:
+    """Return prepared model manifest entries with symlink-resolved file sizes."""
+    cache_vol.reload()
+    if not MODEL_LINK_MANIFEST.exists():
+        return []
+    try:
+        items = json.loads(MODEL_LINK_MANIFEST.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+
+    result: list[dict[str, Any]] = []
+    for item in items:
+        cache_path = Path(item.get("cache_path", ""))
+        size = None
+        exists = cache_path.exists()
+        if exists:
+            try:
+                size = cache_path.stat().st_size
+            except OSError:
+                size = None
+        result.append({
+            **item,
+            "exists": exists,
+            "size": size,
+        })
+    return result
+
+
 @app.local_entrypoint()
 def prepare(dry_run: bool = False, force: bool = False) -> None:
     result = prepare_models.remote(dry_run=dry_run, force=force)

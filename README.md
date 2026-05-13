@@ -107,6 +107,8 @@ python -m scripts.manage_volumes list --volume comfy-cache
 python -m scripts.manage_volumes list --volume comfy-output
 ```
 Use `--refresh-usage` when you want to recalculate recursive size accounting; otherwise the last local scan is reused.
+Use `--refresh-model-sizes` to refresh symlink-resolved model sizes shown in the tree.
+Model removal from `python manage.py` can also remove matched remote files from `comfy-cache`; the Volume menu can delete remote model files directly.
 The usage bar uses Modal's current 1 TiB/month included Volume storage as a pricing reference, not as a hard capacity limit.
 
 ## Features

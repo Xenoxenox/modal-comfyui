@@ -26,6 +26,7 @@ except ImportError:
 from config.loader import load_config, save_config, ConfigError
 from config.schema import Config, ModelSource, ModelSpec, PluginSpec, VALID_MODEL_DIRS
 from scripts.manage_volumes import volume_management_menu
+from scripts.manage_volumes import list_prepared_model_files, remove_volume_model_files
 from scripts.tui import (
     STYLE,
     ask_confirm,
@@ -611,6 +612,43 @@ def _list_models(cfg: Config) -> None:
     print()
 
 
+def _model_target_suffix(spec: ModelSpec) -> str | None:
+    if spec.source == ModelSource.HUGGINGFACE:
+        if not spec.model_dir or not spec.filename:
+            return None
+        return f"/models/{spec.model_dir}/{spec.save_as or Path(spec.filename).name}"
+    if spec.source == ModelSource.EXTERNAL:
+        if not spec.model_dir or not spec.filename:
+            return None
+        return f"/models/{spec.model_dir}/{spec.filename}"
+    if spec.source == ModelSource.LOCAL:
+        if not spec.model_dir or not spec.filename:
+            return None
+        return f"/models/{spec.model_dir}/{spec.save_as or Path(spec.filename).name}"
+    return None
+
+
+def _remote_cache_paths_for_models(cfg: Config, keys: list[str]) -> dict[str, list[str]]:
+    suffixes = {
+        key: suffix
+        for key in keys
+        if (suffix := _model_target_suffix(cfg.models[key])) is not None
+    }
+    result = {key: [] for key in keys}
+    if not suffixes:
+        return result
+    try:
+        prepared = list_prepared_model_files(include_sizes=False)
+    except Exception as exc:
+        console.print(f"[yellow]Could not read prepared model manifest:[/] {exc}")
+        return result
+    for item in prepared:
+        for key, suffix in suffixes.items():
+            if item.target_path.endswith(suffix):
+                result[key].append(item.cache_path)
+    return result
+
+
 def _remove_models(cfg: Config) -> None:
     if not cfg.models:
         print(f"  {D}No models to remove.{RST}")
@@ -627,6 +665,36 @@ def _remove_models(cfg: Config) -> None:
 
     if not ask_confirm(f"Remove {len(to_remove)} model(s)?", default=False):
         return
+
+    remote_paths_by_key = _remote_cache_paths_for_models(cfg, list(to_remove))
+    remote_paths = sorted({path for paths in remote_paths_by_key.values() for path in paths})
+    delete_remote = False
+    if remote_paths:
+        print_result_panel(
+            "[bold yellow]Remote Files Matched[/bold yellow]",
+            [
+                ("Config records", len(to_remove)),
+                ("Remote files", len(remote_paths)),
+                ("Volume", CACHE_VOLUME),
+            ],
+            border_style="yellow",
+        )
+        delete_remote = ask_confirm(
+            f"Also delete {len(remote_paths)} remote model file(s) from {CACHE_VOLUME}?",
+            default=True,
+        )
+
+    if delete_remote and remote_paths:
+        removed, failed = remove_volume_model_files(remote_paths)
+        print_result_panel(
+            "[bold green]Remote Delete[/bold green]",
+            [
+                ("Removed", len(removed)),
+                ("Failed", len(failed) or None),
+            ],
+        )
+        for cache_path, error in failed[:5]:
+            console.print(f"[red]Failed:[/] {cache_path} [dim]{error}[/]")
 
     for key in to_remove:
         del cfg.models[key]
