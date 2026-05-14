@@ -46,6 +46,12 @@ You can point either variable at a differently named Modal secret. Set it to an 
 
 Do not put tokens in `config.toml`, README examples, or logs. Store tokens only in Modal secrets, and keep the secret keys as `HF_TOKEN` and `CIVITAI_API_KEY`.
 
+Set up your modal secrets with default modal secret names:
+```bash
+modal secret create ComfyUI HF_TOKEN=[your HF access token]
+modal secret create civitai-api-key CIVITAI_API_KEY=[your civitai api key]
+```
+
 ### Plugins and Custom Nodes
 
 Add custom node IDs or GitHub repos to `config.toml` to install them via `comfy-cli`.
