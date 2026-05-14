@@ -233,7 +233,7 @@ python -m scripts.manage_volumes list --volume comfy-cache --refresh-usage
 Recursive usage scans can take a while on large caches. Without
 `--refresh-usage`, the tool reuses the last local usage cache when available.
 
-## Headless inference
+## Headless inference (UNTESTED; TO BE UPDATED IN NEXT TAG)
 
 Headless inference runs a ComfyUI API-format workflow without opening the
 browser. Put workflow JSON files in `workflows/`, then run:
