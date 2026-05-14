@@ -1,132 +1,304 @@
 # modal-comfyui
 
-Run ComfyUI on Modal with auto-scaling, GPU snapshots, and easy model management.
+Run ComfyUI on Modal with a local TUI for model setup, cloud GPU Web UI sessions,
+and headless workflow execution.
 
-Good for testing wan2.2 or other video generation models.
+This project keeps your local machine as the controller. Model downloads, ComfyUI,
+and GPU work run inside Modal containers; local code prepares configuration,
+launches jobs, and downloads results.
+
+## Who this is for
+
+Use this project if you want to:
+
+- run ComfyUI on cloud GPUs without managing a GPU server;
+- cache large model files in Modal Volumes across runs;
+- test workflows in the ComfyUI Web UI, then run API-format workflows headlessly;
+- switch GPUs per serve/deploy/inference run from an interactive terminal.
+
+Modal is usage-based and scales to zero, so idle Web UI apps do not keep a GPU
+running. At the time of writing, Modal's Starter plan lists $30/month in free
+compute credit and Modal Volumes list 1 TiB/month included storage. Check the
+current Modal pricing page before relying on those limits:
+
+https://modal.com/pricing
 
 ## Prerequisites
 
-- A Modal account
-- Python installed
-- `uv` installed
+- A Modal account.
+- Python 3.13+ locally. The Modal image uses Python 3.11 intentionally.
+- `uv` installed locally.
+- A terminal that can run interactive prompts.
+- Optional: Modal secrets for private Hugging Face or CivitAI downloads.
 
-## Installation
+Install dependencies and authenticate with Modal:
 
-1. Clone this repository.
-2. Install dependencies:
-   ```bash
-   uv sync
-   ```
-3. Set up your modal account (if not done already):
-   ```bash
-   modal setup
-   ```
-
-## Configuration
-
-### Models
-
-Copy `config.toml.example` to `config.toml` and edit it to manage your models. You can specify:
-- Hugging Face models(`models`) using `repo_id` and `filename`.
-- External models(`models_ext`, e.g. civitai) using a direct `url`.
-
-Models are downloaded to volumes and symlinked to the specified `model_dir`.
-See `config.toml.example` for reference.
-
-### Modal Secrets for Model Prepare
-
-`modal run server/app.py::prepare` mounts Modal secrets only for model downloads. By default it stays compatible with the original secret names:
-
-| Environment variable | Default Modal secret | Secret key used inside Modal |
-|----------------------|----------------------|------------------------------|
-| `MODAL_HF_SECRET_NAME` | `ComfyUI` | `HF_TOKEN` |
-| `MODAL_CIVITAI_SECRET_NAME` | `civitai-api-key` | `CIVITAI_API_KEY` |
-
-You can point either variable at a differently named Modal secret. Set it to an empty string, `none`, or `false` to skip mounting that secret, which is useful for public Hugging Face models or configs that do not use CivitAI.
-
-Do not put tokens in `config.toml`, README examples, or logs. Store tokens only in Modal secrets, and keep the secret keys as `HF_TOKEN` and `CIVITAI_API_KEY`.
-
-Set up your modal secrets with default modal secret names:
 ```bash
-modal secret create ComfyUI HF_TOKEN=[your HF access token]
-modal secret create civitai-api-key CIVITAI_API_KEY=[your civitai api key]
+uv sync
+modal setup
 ```
 
-### Plugins and Custom Nodes
+Before running Modal commands, create your private local config:
 
-Add custom node IDs or GitHub repos to `config.toml` to install them via `comfy-cli`.
-- **Workflow Dependencies**: If you have a `workflow_api.json` in the root directory, the setup will automatically install the necessary custom nodes for that workflow.
+```bash
+cp config.toml.example config.toml
+```
 
-### In case of Insufficient Custom Node
+On Windows PowerShell, use `Copy-Item` if `cp` is not available:
 
-Open ComfyUI manager on comfyui and click "Used in Workflow" to see which custom nodes are used in the workflow.
+```powershell
+Copy-Item config.toml.example config.toml
+```
 
-Add these custom nodes to `config.toml` (be careful of node id).
+`config.toml` is gitignored because it is expected to contain your local model
+and plugin choices. Do not store access token values in `config.toml`, README
+examples, or logs.
 
-## Usage
+## Fast path: use the TUI
 
-### Interactive Manager
+Start the interactive manager:
 
-Use the local manager for model/plugin config, model prepare, Web UI GPU selection, and Volume inspection:
 ```bash
 python manage.py
 ```
 
-### Web UI — Serve (Development)
+The TUI is the recommended entry point. Its main menu lets you:
 
-Run the following command to start ComfyUI in development mode:
+- manage models in `config.toml`;
+- manage ComfyUI custom nodes/plugins;
+- prepare Modal model cache and symlinks;
+- launch a development Web UI session;
+- deploy a persistent Web UI endpoint;
+- inspect and clean Modal Volumes.
+
+The TUI writes `config.toml` for you and shows the exact Modal command before it
+runs prepare, serve, or deploy actions.
+
+## Configure `config.toml`
+
+You can edit `config.toml` manually or use `python manage.py` to add entries.
+The file supports four model sources:
+
+```toml
+[models.my-checkpoint]
+source = "huggingface"
+repo_id = "owner/repo"
+filename = "model.safetensors"
+model_dir = "checkpoints"
+
+[models.my-lora]
+source = "external"
+url = "https://example.com/path/to/model.safetensors"
+filename = "my-lora.safetensors"
+model_dir = "loras"
+
+[models.my-local-upload]
+source = "local"
+filename = "local-models/loras/my-lora.safetensors"
+model_dir = "loras"
+save_as = "my-lora.safetensors"
+
+[models.my-diffusers-repo]
+source = "huggingface_snapshot"
+repo_id = "owner/diffusers-repo"
+target_dir = "/root/comfy/ComfyUI/models/diffusers/my-diffusers-repo"
+
+[plugins.comfyui-easy-use]
+node_id = "comfyui-easy-use"
+name = "ComfyUI Easy Use"
+```
+
+`model_dir` is relative to `/root/comfy/ComfyUI/models/` inside the Modal
+container. Valid directories include `checkpoints`, `clip`, `clip_vision`,
+`controlnet`, `diffusers`, `diffusion_models`, `embeddings`,
+`facerestore_models`, `gligen`, `hypernetworks`, `insightface`, `loras`,
+`photomaker`, `style_models`, `text_encoders`, `unet`, `upscale_models`, `vae`,
+and `vae_approx`.
+
+For private downloads, create Modal secrets with the keys expected inside Modal:
+
+| Local env var | Default Modal secret name | Key inside Modal |
+| --- | --- | --- |
+| `MODAL_HF_SECRET_NAME` | `ComfyUI` | `HF_TOKEN` |
+| `MODAL_CIVITAI_SECRET_NAME` | `civitai-api-key` | `CIVITAI_API_KEY` |
+
+Set either local env var to an empty string, `none`, or `false` to skip mounting
+that secret. Secret names are configurable; the keys inside Modal stay fixed.
+
+## Prepare models
+
+Prepare downloads configured models into the `comfy-cache` Modal Volume and
+writes a manifest used to symlink cached files into ComfyUI model directories.
+Model weights are not copied into the image.
+
+From the TUI:
+
+```bash
+python manage.py
+```
+
+Choose `Prepare / launch Modal`, then `Prepare models on Modal`.
+
+Direct command:
+
+```bash
+modal run server/app.py::prepare
+```
+
+Useful variants:
+
+```bash
+modal run server/app.py::prepare --dry-run
+modal run server/app.py::prepare --force
+```
+
+If `workflow_api.json` exists at the repository root, the Modal image build also
+installs workflow dependencies with `comfy node install-deps`. If it is absent,
+that step is skipped with a warning.
+
+## Start the Web UI
+
+For development sessions, prefer the launcher:
+
 ```bash
 python serve.py --gpu L4
 ```
-This will provide a temporary URL where you can access the ComfyUI interface.
-Choose another GPU by changing the argument:
+
+It sets UTF-8 environment variables, stops old ephemeral Modal apps, writes logs
+to `logs/modal_serve_<timestamp>.log`, waits for the Modal URL, and probes the
+ComfyUI health endpoint.
+
+You can choose another Modal GPU:
+
 ```bash
 python serve.py --gpu L40S
 ```
 
-### Web UI — Deploy (Production)
+The TUI runs the same launcher from `Prepare / launch Modal` -> `Dev serve Web UI`.
 
-To deploy ComfyUI as a persistent app:
+The Web UI is served through nginx on Modal port `8000`. ComfyUI itself listens
+only on `127.0.0.1:8188` inside the container. Keep using the Modal URL printed
+by `serve.py`.
+
+If you want Web UI outputs saved locally while using the browser, run the local
+watcher in another terminal:
+
+```bash
+python -m client.watch <modal-web-ui-url>
+```
+
+It polls ComfyUI history and downloads new images into `output/`.
+
+## Deploy the Web UI
+
+Deploy creates a persistent Modal app endpoint:
+
 ```bash
 python -m scripts.deploy_ui --gpu L4
 ```
-`python manage.py` can also prompt for the Web UI GPU before running serve or deploy.
 
-### Headless Inference
+The TUI runs this from `Prepare / launch Modal` -> `Deploy Web UI`.
 
-Run ComfyUI workflows without the browser — submit a JSON workflow, choose a GPU, and download results:
+GPU snapshots are configured for the deployed Web UI path. They help cold starts
+for `modal deploy`; they do not apply to `modal serve`.
+
+## Manage Modal Volumes
+
+This project uses two Modal Volumes:
+
+| Volume | Mount point | Purpose |
+| --- | --- | --- |
+| `comfy-cache` | `/cache` | model downloads, local uploads, prepared symlink manifest |
+| `comfy-output` | `/output` | headless inference outputs by session ID |
+
+Use the TUI:
+
+```bash
+python manage.py
+```
+
+Choose `Manage Modal Volumes` to list cache/output contents, refresh recursive
+usage, delete prepared model files, prune orphaned prepared models, or clean old
+output sessions.
+
+Direct commands:
+
+```bash
+python -m scripts.manage_volumes
+python -m scripts.manage_volumes list --volume comfy-cache
+python -m scripts.manage_volumes list --volume comfy-output
+python -m scripts.manage_volumes list --volume comfy-cache --refresh-usage
+```
+
+Recursive usage scans can take a while on large caches. Without
+`--refresh-usage`, the tool reuses the last local usage cache when available.
+
+## Headless inference
+
+Headless inference runs a ComfyUI API-format workflow without opening the
+browser. Put workflow JSON files in `workflows/`, then run:
+
 ```bash
 python -m client.infer
 ```
 
-Place your ComfyUI API-format workflow JSON files in the `workflows/` directory.
+The client prompts for:
 
-### Volume Management
+- GPU type;
+- workflow JSON path;
+- timeout in minutes;
+- optional seed override for `KSampler` and `KSamplerAdvanced` nodes.
 
-List cached models as a grouped Rich tree, inspect cached recursive usage, or clean up old inference sessions:
+The local `client/` code defines a per-invocation Modal app so the GPU can be
+chosen at runtime. The remote `server/` code starts ComfyUI in the Modal
+container, executes the workflow, writes results under `/output/<session-id>`,
+and returns files for the client to download into `output/<session-id>/`.
+
+Keep the execution contexts separate:
+
+- `client/` runs locally on your machine;
+- `server/` runs inside Modal containers.
+
+## Windows and Modal serve notes
+
+`modal serve` can print Unicode characters that break GBK Windows terminals.
+Use the local launcher instead:
+
 ```bash
+python serve.py --gpu L4
+```
+
+If a previous ephemeral app blocks a new serve session, `serve.py` calls
+`modal app list` and stops old ephemeral apps before launching.
+
+If you run Modal commands manually, set a UTF-8 terminal/environment yourself
+and inspect Modal apps with:
+
+```bash
+modal app list
+```
+
+## Workflow save/load in the Web UI
+
+ComfyUI workflow userdata read/write goes through nginx. The nginx config
+preserves workflow paths that include encoded slashes, so workflow save/load
+requests do not need any manual user workaround for the historical 405 issue.
+
+## Command reference
+
+```bash
+uv sync
+modal setup
+python manage.py
+modal run server/app.py::prepare
+python serve.py --gpu L4
+python -m scripts.deploy_ui --gpu L4
 python -m scripts.manage_volumes
+python -m client.infer
+python -m client.watch <modal-web-ui-url>
 ```
-Non-interactive list checks are also available:
-```bash
-python -m scripts.manage_volumes list --volume comfy-cache
-python -m scripts.manage_volumes list --volume comfy-output
-```
-Use `--refresh-usage` when you want to recalculate recursive size accounting; otherwise the last local scan is reused.
-For `comfy-cache`, `--refresh-usage` also refreshes model sizes shown in the tree.
-Model removal from `python manage.py` can also remove matched remote files from `comfy-cache`; the Volume menu can delete remote model files directly.
-The usage bar uses Modal's current 1 TiB/month included Volume storage as a pricing reference, not as a hard capacity limit.
-
-## Features
-
-- **Dual Mode**: Web UI for workflow design, headless mode for batch production.
-- **Auto-scaling**: Scales down to zero when not in use to save costs.
-- **GPU Snapshots**: Fast startup times using Modal's GPU snapshots.
-- **Model Caching**: Uses Modal Volumes to cache models across runs.
-- **Custom Node Management**: Integrated with `comfy-cli` for easy plugin installation.
-- **Interactive CLI**: GPU selection, workflow file, timeout via questionary prompts.
 
 ## Contributing
 
-Please feel free to contribute to make this project better.
-Performance improvements/optimizations are very welcome.
+Contributions are welcome, especially improvements that make Modal startup,
+model preparation, or ComfyUI workflow execution more reliable.
