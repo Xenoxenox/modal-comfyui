@@ -110,6 +110,7 @@ The image is built in layers and cached by Modal:
 5. `prepare_models` runs on demand via `modal run server/app.py::prepare` against `comfy-cache` — reads `config.toml`, downloads models and symlinks them into ComfyUI model dirs; does **not** copy files
 6. If plugins defined in `config.toml`: `comfy node install` for each plugin ID
 7. `workflows/` directory is copied into `/root/comfy/workflow-seed/`
+8. `server/nginx.conf` is copied to `/root/nginx.conf`; nginx is installed in the image and runs in front of ComfyUI for the Web UI.
 
 ### Model & Plugin Config (`config.toml`)
 
@@ -155,7 +156,10 @@ node_id = "comfyui-my-nodes"   # or use repo = "https://github.com/..."
 
 ### Web UI (`server/ui.py`)
 
-- `@modal.web_server(8000)` serving ComfyUI on port 8000 via `comfy launch --background`
+- `@modal.web_server(8000)` exposes nginx, not ComfyUI directly.
+- ComfyUI listens on `127.0.0.1:8188`; nginx listens on `8000` and proxies HTTP plus `/ws` WebSocket traffic to ComfyUI.
+- `server/nginx.conf` includes a targeted workflow userdata rule that proxies `/api/userdata/workflows/<file>` to `/api/userdata/workflows%2F<file>`. This preserves ComfyUI workflow read/write when an upstream layer decodes `%2F` before route matching.
+- Do not change Web UI back to direct ComfyUI port `8000` unless you also provide an equivalent tested fix for workflow userdata POST/DELETE 405.
 - Web UI GPU defaults to `L4`; use `python serve.py --gpu <GPU>` or `python -m scripts.deploy_ui --gpu <GPU>` instead of setting env vars manually
 - GPU snapshots (`enable_gpu_snapshot`) for faster cold starts — **only works with `modal deploy`, not `modal serve`**
 - Scales to zero after 60s idle (`scaledown_window`)
