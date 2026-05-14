@@ -37,6 +37,18 @@ Install dependencies and authenticate with Modal:
 uv sync
 modal setup
 ```
+> [!TIP]
+> If the terminal shows "modal: The term 'modal' is not recognized as a name of a cmdlet..." or a similar prompt, add "uv run" before "modal setup".
+> ```bash
+> uv run modal setup
+> ```
+> Or just activate .env before entering such commands:
+> ```bash
+> source .venv/bin/activate
+> ```
+> ```powershell
+> .venv\Scripts\Activate.ps1
+> ```
 
 Before running Modal commands, create your private local config:
 
@@ -121,6 +133,20 @@ For private downloads, create Modal secrets with the keys expected inside Modal:
 | --- | --- | --- |
 | `MODAL_HF_SECRET_NAME` | `ComfyUI` | `HF_TOKEN` |
 | `MODAL_CIVITAI_SECRET_NAME` | `civitai-api-key` | `CIVITAI_API_KEY` |
+
+> [!TIP]
+> Show currently used Modal secrets:
+> ```bash
+> modal secret list
+> ```
+> Create your own Modal secrets:
+> ```bash
+> modal secret create [OPTIONS] SECRET_NAME [KEYVALUES]...
+> ```
+> For example:
+> ```bash
+> modal secret create ComfyUI HF_TOKEN=hf_[Your HF access token]
+> ```
 
 Set either local env var to an empty string, `none`, or `false` to skip mounting
 that secret. Secret names are configurable; the keys inside Modal stay fixed.
