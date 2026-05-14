@@ -352,12 +352,25 @@ def _get_plugins() -> list[str]:
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
-    .apt_install("git", "git-lfs", "libgl1-mesa-dev", "libglib2.0-0", "aria2", "wget")
+    .apt_install(
+        "git",
+        "git-lfs",
+        "libgl1-mesa-dev",
+        "libglib2.0-0",
+        "aria2",
+        "wget",
+        "nginx",
+    )
     .pip_install_from_requirements(str(root_dir / "requirements_comfy.txt"))
     .run_commands("comfy --skip-prompt install --nvidia")
     .run_commands("git lfs install")
     .add_local_python_source("config", copy=True)
     .add_local_file(str(root_dir / "config.toml"), CONFIG_PATH, copy=True)
+    .add_local_file(
+        str(root_dir / "server" / "nginx.conf"),
+        "/root/nginx.conf",
+        copy=True,
+    )
     .env({
         "HF_HUB_ENABLE_HF_TRANSFER": "1",
         **_prepare_secret_env(),
