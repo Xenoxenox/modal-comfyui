@@ -59,20 +59,32 @@ Add these custom nodes to `config.toml` (be careful of node id).
 
 ## Usage
 
+### Interactive Manager
+
+Use the local manager for model/plugin config, model prepare, Web UI GPU selection, and Volume inspection:
+```bash
+python manage.py
+```
+
 ### Web UI — Serve (Development)
 
 Run the following command to start ComfyUI in development mode:
 ```bash
-modal serve server/ui.py
+python serve.py --gpu L4
 ```
 This will provide a temporary URL where you can access the ComfyUI interface.
+Choose another GPU by changing the argument:
+```bash
+python serve.py --gpu L40S
+```
 
 ### Web UI — Deploy (Production)
 
 To deploy ComfyUI as a persistent app:
 ```bash
-modal deploy server/ui.py
+python -m scripts.deploy_ui --gpu L4
 ```
+`python manage.py` can also prompt for the Web UI GPU before running serve or deploy.
 
 ### Headless Inference
 
@@ -85,10 +97,19 @@ Place your ComfyUI API-format workflow JSON files in the `workflows/` directory.
 
 ### Volume Management
 
-List cached models or clean up old inference sessions:
+List cached models as a grouped Rich tree, inspect cached recursive usage, or clean up old inference sessions:
 ```bash
 python -m scripts.manage_volumes
 ```
+Non-interactive list checks are also available:
+```bash
+python -m scripts.manage_volumes list --volume comfy-cache
+python -m scripts.manage_volumes list --volume comfy-output
+```
+Use `--refresh-usage` when you want to recalculate recursive size accounting; otherwise the last local scan is reused.
+For `comfy-cache`, `--refresh-usage` also refreshes model sizes shown in the tree.
+Model removal from `python manage.py` can also remove matched remote files from `comfy-cache`; the Volume menu can delete remote model files directly.
+The usage bar uses Modal's current 1 TiB/month included Volume storage as a pricing reference, not as a hard capacity limit.
 
 ## Features
 

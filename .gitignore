@@ -33,6 +33,7 @@ logs/
 modal_serve.log
 
 # Tooling
+.cache/
 .claude/
 .firecrawl/
 .roo/

@@ -8,6 +8,8 @@ from typing import Any
 
 import modal
 
+WEB_UI_GPU = os.environ.get("COMFYUI_WEB_GPU", "L4")
+
 if os.environ.get("MODAL_IS_REMOTE") == "1":
     cache_vol = modal.Volume.from_name("comfy-cache", create_if_missing=True)
     CACHE_MOUNT = "/cache"
@@ -56,7 +58,7 @@ else:
 
 @app.function(
     max_containers=1,
-    gpu="L4",
+    gpu=WEB_UI_GPU,
     volumes={CACHE_MOUNT: cache_vol},
     scaledown_window=60,
     enable_memory_snapshot=True,

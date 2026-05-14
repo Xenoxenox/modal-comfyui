@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-用法：python serve.py
+用法：python serve.py [--gpu L4]
 自动停止旧的 ephemeral app，再启动 modal serve，日志写入 logs/modal_serve_[时间戳].log
 
 环境变量：
   SERVE_IDLE_TIMEOUT   无日志增长超时秒数（默认 120）
 """
+import argparse
 import os
 import subprocess
 import sys
@@ -17,6 +18,8 @@ from urllib import request as urlrequest
 import tqdm
 
 IDLE_TIMEOUT = int(os.getenv("SERVE_IDLE_TIMEOUT", "120"))
+DEFAULT_WEB_UI_GPU = "L4"
+WEB_UI_GPU_ENV = "COMFYUI_WEB_GPU"
 POLL_INTERVAL = 2
 MAX_TICKS = (10 * 60) // POLL_INTERVAL  # 10 min display ceiling
 
@@ -78,16 +81,34 @@ def stop_old_apps():
     time.sleep(5)
 
 
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Start modal serve for the ComfyUI Web UI."
+    )
+    parser.add_argument(
+        "--gpu",
+        default=os.getenv(WEB_UI_GPU_ENV, DEFAULT_WEB_UI_GPU),
+        help="Modal GPU for server/ui.py. Defaults to L4.",
+    )
+    return parser
+
+
 def main():
+    args = _build_parser().parse_args()
     stop_old_apps()
 
-    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    env = {
+        **os.environ,
+        "PYTHONUTF8": "1",
+        "PYTHONIOENCODING": "utf-8",
+        WEB_UI_GPU_ENV: args.gpu,
+    }
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
     log_path = log_dir / f"modal_serve_{timestamp}.log"
 
-    print(f"Starting modal serve → {log_path}")
+    print(f"Starting modal serve on GPU {args.gpu} -> {log_path}")
     with open(log_path, "w", encoding="utf-8") as log:
         proc = subprocess.Popen(
             ["modal", "serve", "server/ui.py"],

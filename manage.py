@@ -7,23 +7,43 @@ Usage:
 from __future__ import annotations
 
 import dataclasses
+import os
 import re
 import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlparse
 
 import requests
 
 try:
     import questionary
-    from questionary import Style
 except ImportError:
     print("questionary is required. Run: uv sync")
     raise
 
 from config.loader import load_config, save_config, ConfigError
 from config.schema import Config, ModelSource, ModelSpec, PluginSpec, VALID_MODEL_DIRS
+from scripts.manage_volumes import volume_management_menu
+from scripts.manage_volumes import list_prepared_model_files, remove_volume_model_files
+from scripts.tui import (
+    STYLE,
+    ask_confirm,
+    ask_select,
+    console,
+    gpu_choice_items,
+    model_card,
+    plugin_card,
+    print_banner,
+    print_command_panel,
+    print_model_cards,
+    print_plugin_cards,
+    print_result_panel,
+    print_status,
+    print_step,
+    source_badge,
+)
 
 # ── ANSI Colors (Modal-inspired dark + green theme) ──
 G = "\033[92m"   # bright green (accent)
@@ -34,30 +54,18 @@ R = "\033[91m"   # red (errors)
 B = "\033[1m"    # bold
 RST = "\033[0m"  # reset
 
-STYLE = Style([
-    ("qmark", "fg:#3DCA5D bold"),
-    ("question", "fg:#ffffff bold"),
-    ("answer", "fg:#3DCA5D bold"),
-    ("pointer", "fg:#3DCA5D bold"),
-    ("highlighted", "fg:#3DCA5D bold"),
-    ("selected", "fg:#3DCA5D"),
-    ("separator", "fg:#059443"),
-    ("instruction", "fg:#888888"),
-    ("text", "fg:#cccccc"),
-    ("checkbox", "fg:#3DCA5D"),
-    ("disabled", "fg:#555555"),
-])
-
 CONFIG_PATH = Path(__file__).parent / "config.toml"
 EXAMPLE_PATH = Path(__file__).parent / "config.toml.example"
 CACHE_VOLUME = "comfy-cache"
 LOCAL_MODEL_CACHE_DIR = PurePosixPath("local-models")
+WEB_UI_GPU_ENV = "COMFYUI_WEB_GPU"
+DEFAULT_WEB_UI_GPU = "L4"
 
 
 def _ensure_config() -> Config:
     if not CONFIG_PATH.exists():
         print(f"  {D}config.toml not found.{RST}")
-        if questionary.confirm("Create empty config.toml?", default=True, style=STYLE).ask():
+        if ask_confirm("Create empty config.toml?", default=True):
             save_config(Config(models={}, plugins={}), CONFIG_PATH)
         else:
             sys.exit(1)
@@ -66,6 +74,29 @@ def _ensure_config() -> Config:
 
 def _slugify(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+
+
+def _compact_url(url: str) -> str:
+    parsed = urlparse(url)
+    if not parsed.netloc:
+        return url[:60]
+    if "civitai.com" in parsed.netloc:
+        match = re.search(r"/(?:api/download/models|models)/(\d+)", parsed.path)
+        if match:
+            return f"civitai:{match.group(1)}"
+    return parsed.netloc
+
+
+def _fuzzy_match(needle: str, haystack: str) -> bool:
+    if not needle:
+        return True
+    if needle in haystack:
+        return True
+    pos = 0
+    for char in haystack:
+        if pos < len(needle) and char == needle[pos]:
+            pos += 1
+    return pos == len(needle)
 
 
 def _rel_to_volume_path(path: PurePosixPath) -> str:
@@ -84,6 +115,26 @@ def _normalise_cache_filename(filename: str) -> str:
 
 def _parse_local_path(raw_path: str) -> Path:
     return Path(raw_path.strip().strip("\"'")).expanduser()
+
+
+def _windows_path_note(raw_path: str) -> str:
+    if "\\" not in raw_path:
+        return ""
+    return "Windows separators are accepted locally; cache paths are normalized to POSIX / paths."
+
+
+def nearby_directory_hint(text: str, *, limit: int = 5) -> str:
+    candidate = Path(text.strip().strip("\"'")).expanduser()
+    base = candidate if candidate.is_dir() else candidate.parent
+    if not str(base) or not base.exists() or not base.is_dir():
+        base = Path.cwd()
+    try:
+        directories = sorted(p.name for p in base.iterdir() if p.is_dir())[:limit]
+    except OSError:
+        return ""
+    if not directories:
+        return ""
+    return " Available folders: " + ", ".join(directories)
 
 
 def _upload_to_cache(local_path: Path, cache_filename: str) -> bool:
@@ -376,10 +427,16 @@ def _add_local_model(cfg: Config) -> None:
     ).ask()
     if not raw_path:
         return
+    separator_note = _windows_path_note(raw_path)
+    if separator_note:
+        console.print(f"  [dim]{separator_note}[/]")
 
     local_path = _parse_local_path(raw_path)
     if not local_path.exists() or not local_path.is_file():
         print(f"  {R}File not found:{RST} {local_path}")
+        hint = nearby_directory_hint(raw_path)
+        if hint:
+            console.print(f"  [dim]{hint}[/]")
         return
     if not _is_model_file(local_path.name):
         print(f"  {R}Unsupported model file extension:{RST} {local_path.suffix}")
@@ -432,7 +489,7 @@ def _add_local_model(cfg: Config) -> None:
         f"\n  {D}Target:{RST} {W}{model_dir}/{display_name}{RST}"
         f"\n  {D}Cache:{RST}  {W}{cache_filename}{RST}\n"
     )
-    if not questionary.confirm("Upload now?", default=True, style=STYLE).ask():
+    if not ask_confirm("Upload now?", default=True):
         return
 
     if not _upload_to_cache(local_path, cache_filename):
@@ -485,37 +542,161 @@ def _add_snapshot_model(cfg: Config) -> None:
 
 def _list_models(cfg: Config) -> None:
     if not cfg.models:
+        orphan_count = len(_orphan_prepared_model_files(cfg, include_sizes=False))
+        if orphan_count:
+            console.print(
+                f"\n[bold white]Models[/] [dim](0 configured)[/] "
+                f"[bold yellow]![/] [dim]{orphan_count} orphan"
+                f"{'' if orphan_count == 1 else 's'} detected in cloud[/]"
+            )
         print(f"  {D}No models configured.{RST}")
         return
 
+    filter_text = questionary.text(
+        "Filter models (blank = all):",
+        default="",
+        style=STYLE,
+    ).ask()
+    if filter_text is None:
+        return
+    needle = filter_text.strip().lower()
+
     bundles: dict[str | None, list[tuple[str, ModelSpec]]] = defaultdict(list)
     for key, spec in cfg.models.items():
+        haystack = " ".join(
+            str(part)
+            for part in (
+                key,
+                spec.bundle,
+                spec.source.value,
+                spec.repo_id,
+                spec.filename,
+                spec.model_dir,
+                spec.target_dir,
+                spec.url,
+            )
+            if part
+        ).lower()
+        if not _fuzzy_match(needle, haystack):
+            continue
         bundles[spec.bundle].append((key, spec))
 
-    total = len(cfg.models)
-    print(f"\n  {W}{B}Models{RST} {D}({total} total){RST}")
+    total = sum(len(items) for items in bundles.values())
+    orphan_count = len(_orphan_prepared_model_files(cfg, include_sizes=False))
+    orphan_notice = (
+        f" [bold yellow]![/] [dim]{orphan_count} orphan"
+        f"{'' if orphan_count == 1 else 's'} detected in cloud[/]"
+        if orphan_count
+        else ""
+    )
+    console.print(
+        f"\n[bold white]Models[/] [dim]({total} shown / {len(cfg.models)} total)[/]"
+        f"{orphan_notice}"
+    )
+    console.print("[dim][F] Filter  [R] Refresh  [D] Delete  [B] Back[/]")
 
     for bundle_name in sorted(bundles, key=lambda x: (x is None, x or "")):
         items = bundles[bundle_name]
         if bundle_name:
-            print(f"\n  {G0}{B}Bundle: {bundle_name}{RST} {D}({len(items)} models){RST}")
+            console.print(f"\n[bold green]Bundle: {bundle_name}[/] [dim]({len(items)} models)[/]")
         else:
-            print(f"\n  {D}Standalone:{RST}")
+            console.print("\n[dim]Standalone:[/]")
 
+        cards = []
         for key, spec in items:
-            src_label = spec.source.value[:2].upper()
             if spec.source == ModelSource.HUGGINGFACE:
+                src_label = "HU"
                 target = f"{spec.model_dir}/{spec.save_as or Path(spec.filename).name}"
-                print(f"    {W}{key:<25}{RST} {G0}{src_label}{RST}  {D}{spec.repo_id}{RST}  {G0}→{RST} {D}{target}{RST}")
+                detail = f"{spec.repo_id} -> {target}"
             elif spec.source == ModelSource.HUGGINGFACE_SNAPSHOT:
-                print(f"    {W}{key:<25}{RST} {G0}SN{RST}  {D}{spec.repo_id}{RST}  {G0}→{RST} {D}{spec.target_dir}{RST}")
+                src_label = "SN"
+                target = str(spec.target_dir)
+                detail = f"{spec.repo_id} -> {target}"
             elif spec.source == ModelSource.EXTERNAL:
+                src_label = "EX"
                 target = f"{spec.model_dir}/{spec.filename}"
-                print(f"    {W}{key:<25}{RST} {G0}EX{RST}  {D}{spec.url[:40]}...{RST}  {G0}→{RST} {D}{target}{RST}")
+                detail = f"{_compact_url(spec.url or '')} -> {target}"
             elif spec.source == ModelSource.LOCAL:
+                src_label = "LO"
                 target = f"{spec.model_dir}/{spec.save_as or Path(spec.filename).name}"
-                print(f"    {W}{key:<25}{RST} {G0}LO{RST}  {D}{CACHE_VOLUME}/{spec.filename}{RST}  {G0}→{RST} {D}{target}{RST}")
+                detail = f"{CACHE_VOLUME}/{spec.filename} -> {target}"
+            else:
+                src_label = "??"
+                detail = ""
+            console.print(f"  [bold white]{key:<25}[/] {source_badge(src_label)} [dim]{detail}[/]")
+            cards.append(model_card(key, src_label, detail))
+        print_model_cards(cards)
     print()
+
+
+def _model_target_suffix(spec: ModelSpec) -> str | None:
+    if spec.source == ModelSource.HUGGINGFACE:
+        if not spec.model_dir or not spec.filename:
+            return None
+        return f"/models/{spec.model_dir}/{spec.save_as or Path(spec.filename).name}"
+    if spec.source == ModelSource.EXTERNAL:
+        if not spec.model_dir or not spec.filename:
+            return None
+        return f"/models/{spec.model_dir}/{spec.filename}"
+    if spec.source == ModelSource.LOCAL:
+        if not spec.model_dir or not spec.filename:
+            return None
+        return f"/models/{spec.model_dir}/{spec.save_as or Path(spec.filename).name}"
+    if spec.source == ModelSource.HUGGINGFACE_SNAPSHOT:
+        if not spec.target_dir:
+            return None
+        target = PurePosixPath(str(spec.target_dir).replace("\\", "/"))
+        if target.is_absolute():
+            return target.as_posix()
+        return f"/models/{target.as_posix()}"
+    return None
+
+
+def _configured_model_target_suffixes(cfg: Config) -> set[str]:
+    return {
+        suffix
+        for spec in cfg.models.values()
+        if (suffix := _model_target_suffix(spec)) is not None
+    }
+
+
+def _target_matches_config(target_path: str, suffixes: set[str]) -> bool:
+    return any(target_path.endswith(suffix) for suffix in suffixes)
+
+
+def _orphan_prepared_model_files(cfg: Config, *, include_sizes: bool = True) -> list:
+    suffixes = _configured_model_target_suffixes(cfg)
+    try:
+        prepared = list_prepared_model_files(include_sizes=include_sizes)
+    except Exception as exc:
+        console.print(f"[yellow]Could not read prepared model manifest:[/] {exc}")
+        return []
+    return [
+        item
+        for item in prepared
+        if item.target_path and not _target_matches_config(item.target_path, suffixes)
+    ]
+
+
+def _remote_cache_paths_for_models(cfg: Config, keys: list[str]) -> dict[str, list[str]]:
+    suffixes = {
+        key: suffix
+        for key in keys
+        if (suffix := _model_target_suffix(cfg.models[key])) is not None
+    }
+    result = {key: [] for key in keys}
+    if not suffixes:
+        return result
+    try:
+        prepared = list_prepared_model_files(include_sizes=False)
+    except Exception as exc:
+        console.print(f"[yellow]Could not read prepared model manifest:[/] {exc}")
+        return result
+    for item in prepared:
+        for key, suffix in suffixes.items():
+            if item.target_path.endswith(suffix):
+                result[key].append(item.cache_path)
+    return result
 
 
 def _remove_models(cfg: Config) -> None:
@@ -532,10 +713,38 @@ def _remove_models(cfg: Config) -> None:
     if not to_remove:
         return
 
-    if not questionary.confirm(
-        f"Remove {len(to_remove)} model(s)?", default=False, style=STYLE
-    ).ask():
+    if not ask_confirm(f"Remove {len(to_remove)} model(s)?", default=False):
         return
+
+    remote_paths_by_key = _remote_cache_paths_for_models(cfg, list(to_remove))
+    remote_paths = sorted({path for paths in remote_paths_by_key.values() for path in paths})
+    delete_remote = False
+    if remote_paths:
+        print_result_panel(
+            "[bold yellow]Remote Files Matched[/bold yellow]",
+            [
+                ("Config records", len(to_remove)),
+                ("Remote files", len(remote_paths)),
+                ("Volume", CACHE_VOLUME),
+            ],
+            border_style="yellow",
+        )
+        delete_remote = ask_confirm(
+            f"Also delete {len(remote_paths)} remote model file(s) from {CACHE_VOLUME}?",
+            default=True,
+        )
+
+    if delete_remote and remote_paths:
+        removed, failed = remove_volume_model_files(remote_paths)
+        print_result_panel(
+            "[bold green]Remote Delete[/bold green]",
+            [
+                ("Removed", len(removed)),
+                ("Failed", len(failed) or None),
+            ],
+        )
+        for cache_path, error in failed[:5]:
+            console.print(f"[red]Failed:[/] {cache_path} [dim]{error}[/]")
 
     for key in to_remove:
         del cfg.models[key]
@@ -645,16 +854,30 @@ def _add_plugin(cfg: Config) -> None:
 
 def _list_plugins(cfg: Config) -> None:
     if not cfg.plugins:
-        print(f"  {D}No plugins configured.{RST}")
+        console.print("[dim]  No plugins configured.[/]")
         return
-    print(f"\n  {W}{B}Plugins{RST} {D}({len(cfg.plugins)} total){RST}")
+
+    filter_text = questionary.text(
+        "Filter plugins (blank = all):",
+        default="",
+        style=STYLE,
+    ).ask()
+    if filter_text is None:
+        return
+    needle = filter_text.strip().lower()
+
+    cards = []
+    console.print(f"\n[bold white]Installed Plugins[/] [dim]({len(cfg.plugins)} total)[/]")
     for key, spec in cfg.plugins.items():
-        name_str = f"  {D}({spec.name}){RST}" if spec.name else ""
-        if spec.repo:
-            id_str = spec.repo
-        else:
-            id_str = spec.node_id or ""
-        print(f"  {W}{key:<25}{RST} {D}{id_str}{RST}{name_str}")
+        source = spec.repo or spec.node_id or "local"
+        name = spec.name or key
+        haystack = f"{key} {name} {source}".lower()
+        if not _fuzzy_match(needle, haystack):
+            continue
+        branch = "main" if spec.repo else "registry"
+        console.print(f"  [bold white]{key:<25}[/] [dim]{source}[/]")
+        cards.append(plugin_card(name, source, branch))
+    print_plugin_cards(cards)
     print()
 
 
@@ -671,9 +894,7 @@ def _remove_plugins(cfg: Config) -> None:
     if not to_remove:
         return
 
-    if not questionary.confirm(
-        f"Remove {len(to_remove)} plugin(s)?", default=False, style=STYLE
-    ).ask():
+    if not ask_confirm(f"Remove {len(to_remove)} plugin(s)?", default=False):
         return
 
     for key in to_remove:
@@ -684,35 +905,87 @@ def _remove_plugins(cfg: Config) -> None:
 # ── Deploy ──
 
 
+def _modal_env(gpu_choice: str | None = None) -> dict[str, str]:
+    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    if gpu_choice:
+        env[WEB_UI_GPU_ENV] = gpu_choice
+    return env
+
+
+def _choose_web_gpu() -> str:
+    return ask_select(
+        "Web UI GPU:",
+        choices=gpu_choice_items(DEFAULT_WEB_UI_GPU),
+        default=DEFAULT_WEB_UI_GPU,
+        instruction=(
+            "Used by server/ui.py for modal serve/deploy. "
+            "Headless inference still asks for GPU per run."
+        ),
+    )
+
+
 def _deploy(cfg: Config) -> None:
-    action = questionary.select(
+    action = ask_select(
         "Deploy action:",
         choices=[
-            "Deploy to Modal (modal deploy server/ui.py)",
-            "Prepare models on Modal",
-            "Dev serve (python serve.py)",
-            "Back",
+            questionary.Choice(
+                "Prepare models on Modal",
+                value="prepare",
+                description="Download/link configured models into comfy-cache.",
+            ),
+            questionary.Choice(
+                "Dev serve Web UI",
+                value="serve",
+                description="Run python serve.py with a selected Web UI GPU.",
+            ),
+            questionary.Choice(
+                "Deploy Web UI",
+                value="deploy",
+                description="Run modal deploy server/ui.py with a selected Web UI GPU.",
+            ),
+            questionary.Choice(
+                "Back",
+                value="back",
+                description="Return to the main menu.",
+            ),
         ],
-        style=STYLE,
-    ).ask()
+    )
 
-    if action and "modal deploy" in action:
-        import os
-
-        print(f"\n  {G}Running:{RST} {W}modal deploy server/ui.py{RST}")
-        env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
-        subprocess.run(["modal", "deploy", "server/ui.py"], env=env)
-    elif action == "Prepare models on Modal":
-        import os
-
-        dry_run = questionary.confirm("Dry run only?", default=False, style=STYLE).ask()
+    if action == "deploy":
+        gpu_choice = _choose_web_gpu()
+        print_result_panel(
+            "[bold blue]Web UI Deploy[/bold blue]",
+            [
+                ("Command", f"python -m scripts.deploy_ui --gpu {gpu_choice}"),
+                ("GPU", gpu_choice),
+                ("Models", "Use Prepare models first if cache links are missing."),
+            ],
+            border_style="blue",
+        )
+        print_command_panel(
+            "[bold blue]Confirm Command[/bold blue]",
+            [sys.executable, "-m", "scripts.deploy_ui", "--gpu", gpu_choice],
+            [("GPU", gpu_choice), ("Mode", "deploy")],
+            border_style="blue",
+        )
+        subprocess.run(
+            [sys.executable, "-m", "scripts.deploy_ui", "--gpu", gpu_choice],
+            env=_modal_env(),
+            check=True,
+        )
+    elif action == "prepare":
+        dry_run = ask_confirm(
+            "Dry run only?",
+            default=False,
+            instruction="Shows the model/link plan without downloading or writing the manifest.",
+        )
         force = False
         if not dry_run:
-            force = questionary.confirm(
+            force = ask_confirm(
                 "Force refresh remote downloads?",
                 default=False,
-                style=STYLE,
-            ).ask()
+                instruction="Re-download remote model files even when cache entries exist.",
+            )
 
         cmd = ["modal", "run", "server/app.py::prepare"]
         if dry_run:
@@ -720,12 +993,45 @@ def _deploy(cfg: Config) -> None:
         if force:
             cmd.append("--force")
 
-        print(f"\n  {G}Running:{RST} {W}{' '.join(cmd)}{RST}")
-        env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
-        subprocess.run(cmd, env=env)
-    elif action and "serve" in action:
-        print(f"\n  {G}Running:{RST} {W}python serve.py{RST}")
-        subprocess.run([sys.executable, "serve.py"])
+        print_result_panel(
+            "[bold blue]Model Prepare[/bold blue]",
+            [
+                ("Command", " ".join(cmd)),
+                ("Volume", CACHE_VOLUME),
+                ("Dry run", dry_run),
+                ("Force refresh", force),
+            ],
+            border_style="blue",
+        )
+        print_command_panel(
+            "[bold blue]Confirm Command[/bold blue]",
+            cmd,
+            [("Dry run", dry_run), ("Force refresh", force), ("Volume", CACHE_VOLUME)],
+            border_style="blue",
+        )
+        subprocess.run(cmd, env=_modal_env(), check=True)
+    elif action == "serve":
+        gpu_choice = _choose_web_gpu()
+        print_result_panel(
+            "[bold blue]Web UI Dev Serve[/bold blue]",
+            [
+                ("Command", f"python serve.py --gpu {gpu_choice}"),
+                ("GPU", gpu_choice),
+                ("Encoding", "UTF-8 environment enabled"),
+            ],
+            border_style="blue",
+        )
+        print_command_panel(
+            "[bold blue]Confirm Command[/bold blue]",
+            [sys.executable, "serve.py", "--gpu", gpu_choice],
+            [("GPU", gpu_choice), ("Mode", "dev serve")],
+            border_style="blue",
+        )
+        subprocess.run(
+            [sys.executable, "serve.py", "--gpu", gpu_choice],
+            env=_modal_env(),
+            check=True,
+        )
 
 
 # ── Main Menu ──
@@ -789,11 +1095,10 @@ def _plugins_menu(cfg: Config) -> None:
 
 
 def main() -> None:
-    print()
-    print(f"  {G}{B}┌─────────────────────────────────┐{RST}")
-    print(f"  {G}{B}│{RST}  {W}{B}ComfyUI  Config  Manager{RST}       {G}{B}│{RST}")
-    print(f"  {G}{B}└─────────────────────────────────┘{RST}")
-    print()
+    print_banner(
+        "ComfyUI Manager",
+        "Configure models/plugins, prepare Modal volumes, and launch the Web UI.",
+    )
 
     try:
         cfg = _ensure_config()
@@ -803,30 +1108,57 @@ def main() -> None:
 
     n_models = len(cfg.models)
     n_plugins = len(cfg.plugins)
-    print(f"  {D}{n_models} models · {n_plugins} plugins{RST}\n")
+    print_status(f"{n_models} models - {n_plugins} plugins", style="green")
 
     while True:
-        choice = questionary.select(
+        choice = ask_select(
             "What do you want to do?",
             choices=[
-                "Manage models",
-                "Manage plugins",
-                "Deploy to Modal",
-                "Exit",
+                questionary.Choice(
+                    "Manage models",
+                    value="models",
+                    description="Add/list/remove model config and upload local model files.",
+                ),
+                questionary.Choice(
+                    "Manage plugins",
+                    value="plugins",
+                    description="Add/list/remove ComfyUI custom node config.",
+                ),
+                questionary.Choice(
+                    "Prepare / launch Modal",
+                    value="deploy",
+                    description="Prepare comfy-cache, choose Web UI GPU, serve or deploy.",
+                ),
+                questionary.Choice(
+                    "Manage Modal Volumes",
+                    value="volumes",
+                    description="List comfy-cache/comfy-output or clean old output sessions.",
+                ),
+                questionary.Choice("Exit", value="exit"),
             ],
-            style=STYLE,
-        ).ask()
+        )
 
-        if not choice or choice == "Exit":
+        if choice == "exit":
             break
-        elif choice == "Manage models":
+        elif choice == "models":
+            print_step("Main > Models")
             _models_menu(cfg)
-        elif choice == "Manage plugins":
+        elif choice == "plugins":
+            print_step("Main > Plugins")
             _plugins_menu(cfg)
-        elif choice == "Deploy to Modal":
+        elif choice == "deploy":
+            print_step("Main > Modal")
             _deploy(cfg)
+        elif choice == "volumes":
+            print_step("Main > Volumes")
+            orphan_cache_paths = {
+                item.cache_path
+                for item in _orphan_prepared_model_files(cfg, include_sizes=False)
+                if item.cache_path
+            }
+            volume_management_menu(orphan_cache_paths=orphan_cache_paths)
 
-    print(f"\n  {G}{B}Done.{RST}\n")
+    console.print("\n[bold green]Done.[/bold green]\n")
 
 
 if __name__ == "__main__":
