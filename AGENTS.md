@@ -10,6 +10,9 @@ This file provides guidance to agents when working with code in this repository.
 - Web UI traffic goes through `server/nginx.conf`: Modal exposes nginx on port `8000`, while ComfyUI listens only on `127.0.0.1:8188`.
 - The nginx workflow userdata rule is intentional: `/api/userdata/workflows/<file>` is proxied to `/api/userdata/workflows%2F<file>` so ComfyUI workflow read/write does not return 405 after `%2F` is decoded upstream.
 - Two Modal Volumes: `comfy-cache` mounted at `/cache` (model weights, custom nodes) and `comfy-output` mounted at `/output` (generated results by session ID).
+- Empty Web UI mode uses `COMFYUI_CONFIG_PROFILE=empty`, bakes `config.empty.toml`, and runs in Modal Environment `empty`; same-named Volumes are isolated by Modal Environment.
+- Empty Web UI mode must not mount default prepare secrets; the `empty` Modal Environment is expected to work without `ComfyUI` or `civitai-api-key` secrets.
+- Do not treat an empty config alone as empty mode: an old model manifest in the same `comfy-cache` would still symlink prepared models back into ComfyUI.
 - Model assets are cached in `comfy-cache`, then symlinked into ComfyUI model dirs (do not assume direct file copies).
 - `prepare_models` mounts Modal secrets by name from local env vars: `MODAL_HF_SECRET_NAME` defaults to `ComfyUI`, and `MODAL_CIVITAI_SECRET_NAME` defaults to `civitai-api-key`. Empty string, `none`, or `false` disables that secret.
 - Secret names are configurable, but token env keys inside Modal stay `HF_TOKEN` and `CIVITAI_API_KEY`; do not put tokens in `config.toml`, docs, or logs.
@@ -20,7 +23,9 @@ This file provides guidance to agents when working with code in this repository.
 - Install deps: `uv sync`
 - Modal auth bootstrap: `modal setup`
 - Dev serve (Web UI): `modal serve server/ui.py`
+- Empty dev serve (workflow cleanup): `python serve.py --empty --gpu T4`
 - Deploy (Web UI): `modal deploy server/ui.py`
+- Empty deploy (workflow cleanup): `python -m scripts.deploy_ui --empty --gpu T4`
 - Headless inference: `python -m client.infer`
 - Volume management: `python -m scripts.manage_volumes`
 

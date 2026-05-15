@@ -200,6 +200,21 @@ You can choose another Modal GPU:
 python serve.py --gpu L40S
 ```
 
+For low-cost workflow cleanup, start an empty Web UI on a T4:
+
+```bash
+python serve.py --empty --gpu T4
+```
+
+Empty mode bakes the tracked `config.empty.toml` instead of your private
+`config.toml` and runs in the Modal `empty` Environment. Modal Environments
+isolate Apps, Secrets, and Storage, so the same `comfy-cache` and
+`comfy-output` names point at separate empty-mode Volumes. This prevents an old
+prepared model manifest from the normal environment from symlinking full model
+weights back into ComfyUI. Empty mode also skips prepare-time Modal secrets, so
+the `empty` Environment does not need your normal Hugging Face or CivitAI
+secrets.
+
 The TUI runs the same launcher from `Prepare / launch Modal` -> `Dev serve Web UI`.
 
 The Web UI is served through nginx on Modal port `8000`. ComfyUI itself listens
@@ -221,6 +236,13 @@ Deploy creates a persistent Modal app endpoint:
 
 ```bash
 python -m scripts.deploy_ui --gpu L4
+```
+
+Empty deploy is also supported when you want a persistent workflow-editing
+endpoint without the normal model cache:
+
+```bash
+python -m scripts.deploy_ui --empty --gpu T4
 ```
 
 The TUI runs this from `Prepare / launch Modal` -> `Deploy Web UI`.
@@ -258,6 +280,10 @@ python -m scripts.manage_volumes list --volume comfy-cache --refresh-usage
 
 Recursive usage scans can take a while on large caches. Without
 `--refresh-usage`, the tool reuses the last local usage cache when available.
+
+The volume management commands inspect the current Modal Environment selected
+by Modal. Empty mode uses the `empty` Environment, so its same-named Volumes are
+separate from the normal environment's `comfy-cache` and `comfy-output`.
 
 ## Headless inference (UNTESTED; TO BE UPDATED IN NEXT TAG)
 
@@ -318,7 +344,9 @@ modal setup
 python manage.py
 modal run server/app.py::prepare
 python serve.py --gpu L4
+python serve.py --empty --gpu T4
 python -m scripts.deploy_ui --gpu L4
+python -m scripts.deploy_ui --empty --gpu T4
 python -m scripts.manage_volumes
 python -m client.infer
 python -m client.watch <modal-web-ui-url>

@@ -13,8 +13,10 @@ uv sync                        # install dependencies (modal + questionary + ric
 modal setup                    # authenticate with Modal (one-time)
 python manage.py               # interactive manager for config, prepare, GPU, volumes
 python serve.py --gpu L4       # dev Web UI — auto-cleans old apps, logs to logs/modal_serve_[timestamp].log
+python serve.py --empty --gpu T4  # empty workflow-editing Web UI in Modal Environment "empty"
 modal serve server/ui.py       # dev Web UI (manual)
 python -m scripts.deploy_ui --gpu L4  # production Web UI — persistent endpoint
+python -m scripts.deploy_ui --empty --gpu T4  # persistent empty workflow-editing endpoint
 python -m client.infer         # headless inference — interactive GPU/workflow selection
 python -m client.watch <url>   # local watcher — download new Web UI outputs into output/
 python -m scripts.manage_volumes  # manage Modal Volumes (tree/list/clean)
@@ -31,6 +33,30 @@ cp config.toml.example config.toml
 ```
 
 Optionally place a `workflow_api.json` at the repo root or workflow JSON files in `workflows/`. If `workflow_api.json` is present, the image build automatically installs its required custom nodes via `comfy node install-deps`.
+
+## Empty Workflow-Editing Mode
+
+Use empty mode when you want to open ComfyUI cheaply to organize workflows
+without loading your normal model/plugin config:
+
+```bash
+python serve.py --empty --gpu T4
+```
+
+Empty mode sets `COMFYUI_CONFIG_PROFILE=empty`, bakes the tracked
+`config.empty.toml`, and explicitly uses Modal Environment `empty`. Modal
+Environments isolate Apps, Secrets, and Storage, so `comfy-cache` and
+`comfy-output` are same-named but separate resources in empty mode. Empty mode
+also skips prepare-time Modal secrets, so the `empty` Environment does not need
+the normal `ComfyUI` or `civitai-api-key` secrets. This matters because
+`server/ui.py` syncs the prepared model manifest at startup; an empty config
+without Environment isolation could still re-link old prepared models.
+
+Persistent empty deploy is supported:
+
+```bash
+python -m scripts.deploy_ui --empty --gpu T4
+```
 
 ## Local-Only Helper Files
 
@@ -98,6 +124,10 @@ modal-comfyui/
 |--------|------------|----------|
 | `comfy-cache` | `/cache` | HF model cache, external model downloads, custom nodes |
 | `comfy-output` | `/output` | Generated images (currently unused — output not yet wired) |
+
+The table above describes a single Modal Environment. Empty mode uses the
+`empty` Environment, where same-named Volumes are isolated from the normal
+environment.
 
 ### Modal Image Build Pipeline (`server/app.py`)
 

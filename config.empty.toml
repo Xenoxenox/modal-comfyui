@@ -1,0 +1,5 @@
+# Empty config profile for low-cost Web UI workflow editing.
+#
+# This file is intentionally tracked and contains no private model, plugin, or
+# token data. Launch it through a separate Modal Environment, for example:
+#   python serve.py --empty --gpu T4

@@ -26,14 +26,41 @@ DEFAULT_CIVITAI_SECRET_NAME = "civitai-api-key"
 DISABLED_SECRET_NAMES = {"", "none", "false"}
 MODAL_HF_SECRET_NAME_ENV = "MODAL_HF_SECRET_NAME"
 MODAL_CIVITAI_SECRET_NAME_ENV = "MODAL_CIVITAI_SECRET_NAME"
+CONFIG_PROFILE_ENV = "COMFYUI_CONFIG_PROFILE"
+DEFAULT_CONFIG_PROFILE = "default"
+EMPTY_CONFIG_PROFILE = "empty"
 
 root_dir = Path(__file__).parent.parent
+
+
+# ── Config Profile Selection ──
+
+
+def _config_profile() -> str:
+    return os.environ.get(CONFIG_PROFILE_ENV, DEFAULT_CONFIG_PROFILE).strip().lower()
+
+
+def _local_config_path() -> Path:
+    profile = _config_profile()
+    if profile == EMPTY_CONFIG_PROFILE:
+        return root_dir / "config.empty.toml"
+    if profile in {"", DEFAULT_CONFIG_PROFILE}:
+        return root_dir / "config.toml"
+    raise ValueError(
+        f"Unsupported {CONFIG_PROFILE_ENV}={profile!r}. "
+        f"Supported profiles: {DEFAULT_CONFIG_PROFILE}, {EMPTY_CONFIG_PROFILE}."
+    )
 
 
 # ── Model Download Functions ──
 
 
 def _prepare_secret_env() -> dict[str, str]:
+    if _config_profile() == EMPTY_CONFIG_PROFILE:
+        return {
+            MODAL_HF_SECRET_NAME_ENV: "none",
+            MODAL_CIVITAI_SECRET_NAME_ENV: "none",
+        }
     return {
         MODAL_HF_SECRET_NAME_ENV: os.environ.get(
             MODAL_HF_SECRET_NAME_ENV,
@@ -54,6 +81,9 @@ def _configured_secret_name(env_var: str, default: str) -> str | None:
 
 
 def get_model_prepare_secrets() -> list[modal.Secret]:
+    if _config_profile() == EMPTY_CONFIG_PROFILE:
+        return []
+
     secret_names = [
         _configured_secret_name(MODAL_HF_SECRET_NAME_ENV, DEFAULT_HF_SECRET_NAME),
         _configured_secret_name(
@@ -341,7 +371,7 @@ def download_all() -> None:
 def _get_plugins() -> list[str]:
     try:
         from config.loader import load_config, to_legacy
-        cfg = load_config(root_dir / "config.toml")
+        cfg = load_config(_local_config_path())
         _, _, _, _, plugins = to_legacy(cfg)
         return plugins
     except Exception:
@@ -365,7 +395,7 @@ image = (
     .run_commands("comfy --skip-prompt install --nvidia")
     .run_commands("git lfs install")
     .add_local_python_source("config", copy=True)
-    .add_local_file(str(root_dir / "config.toml"), CONFIG_PATH, copy=True)
+    .add_local_file(str(_local_config_path()), CONFIG_PATH, copy=True)
     .add_local_file(
         str(root_dir / "server" / "nginx.conf"),
         "/root/nginx.conf",

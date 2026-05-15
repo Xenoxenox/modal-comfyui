@@ -17,9 +17,18 @@ from urllib import request as urlrequest
 
 import tqdm
 
+from scripts.web_ui_mode import (
+    CONFIG_PROFILE_ENV,
+    DEFAULT_WEB_UI_GPU,
+    WEB_UI_GPU_ENV,
+    add_web_ui_mode_args,
+    empty_mode_env,
+    ensure_modal_environment,
+    modal_env_args,
+    mode_from_args,
+)
+
 IDLE_TIMEOUT = int(os.getenv("SERVE_IDLE_TIMEOUT", "120"))
-DEFAULT_WEB_UI_GPU = "L4"
-WEB_UI_GPU_ENV = "COMFYUI_WEB_GPU"
 POLL_INTERVAL = 2
 MAX_TICKS = (10 * 60) // POLL_INTERVAL  # 10 min display ceiling
 
@@ -66,9 +75,10 @@ def _probe_url(url: str, retries: int = 5, delay: float = 3.0) -> bool:
     return False
 
 
-def stop_old_apps():
+def stop_old_apps(modal_env: str | None = None):
+    list_cmd = ["modal", "app", "list", *modal_env_args(modal_env)]
     result = subprocess.run(
-        ["modal", "app", "list"],
+        list_cmd,
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         env={**os.environ, "PYTHONUTF8": "1"},
     )
@@ -77,7 +87,10 @@ def stop_old_apps():
             app_id = line.split("|")[1].strip()
             if app_id:
                 print(f"Stopping old app: {app_id}")
-                subprocess.run(["modal", "app", "stop", app_id], capture_output=True)
+                subprocess.run(
+                    ["modal", "app", "stop", *modal_env_args(modal_env), app_id],
+                    capture_output=True,
+                )
     time.sleep(5)
 
 
@@ -85,33 +98,37 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Start modal serve for the ComfyUI Web UI."
     )
-    parser.add_argument(
-        "--gpu",
-        default=os.getenv(WEB_UI_GPU_ENV, DEFAULT_WEB_UI_GPU),
-        help="Modal GPU for server/ui.py. Defaults to L4.",
-    )
+    add_web_ui_mode_args(parser)
     return parser
 
 
 def main():
     args = _build_parser().parse_args()
-    stop_old_apps()
+    profile, modal_env = mode_from_args(args)
+    ensure_modal_environment(modal_env)
+    stop_old_apps(modal_env)
 
     env = {
         **os.environ,
         "PYTHONUTF8": "1",
         "PYTHONIOENCODING": "utf-8",
         WEB_UI_GPU_ENV: args.gpu,
+        CONFIG_PROFILE_ENV: profile,
+        **empty_mode_env(profile),
     }
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
     log_path = log_dir / f"modal_serve_{timestamp}.log"
 
-    print(f"Starting modal serve on GPU {args.gpu} -> {log_path}")
+    env_label = modal_env or "profile default"
+    print(
+        f"Starting modal serve on GPU {args.gpu} "
+        f"profile={profile} env={env_label} -> {log_path}"
+    )
     with open(log_path, "w", encoding="utf-8") as log:
         proc = subprocess.Popen(
-            ["modal", "serve", "server/ui.py"],
+            ["modal", "serve", *modal_env_args(modal_env), "server/ui.py"],
             env=env,
             stdout=log,
             stderr=log,
