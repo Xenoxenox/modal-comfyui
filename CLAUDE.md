@@ -11,7 +11,7 @@ Run ComfyUI on Modal with two modes: **Web UI** (browser-based workflow design) 
 ```bash
 uv sync                        # install dependencies (modal + questionary + rich)
 modal setup                    # authenticate with Modal (one-time)
-python manage.py               # interactive manager for config, prepare, GPU, volumes
+python manage.py               # interactive manager for Run ComfyUI, config, deploy, volumes
 python serve.py --gpu L4       # dev Web UI — auto-cleans old apps, logs to logs/modal_serve_[timestamp].log
 python serve.py --empty --gpu T4  # empty workflow-editing Web UI in Modal Environment "empty"
 modal serve server/ui.py       # dev Web UI (manual)

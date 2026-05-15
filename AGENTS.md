@@ -22,6 +22,7 @@ This file provides guidance to agents when working with code in this repository.
 ## Commands actually used by this project
 - Install deps: `uv sync`
 - Modal auth bootstrap: `modal setup`
+- Interactive manager: `python manage.py`
 - Dev serve (Web UI): `modal serve server/ui.py`
 - Empty dev serve (workflow cleanup): `python serve.py --empty --gpu T4`
 - Deploy (Web UI): `modal deploy server/ui.py`

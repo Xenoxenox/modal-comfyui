@@ -76,10 +76,10 @@ python manage.py
 
 The TUI is the recommended entry point. Its main menu lets you:
 
+- run ComfyUI in Normal Mode with a pre-flight config/manifest check;
+- run Minimal Mode (Empty) for low-cost workflow cleanup without normal config or prepare;
 - manage models in `config.toml`;
 - manage ComfyUI custom nodes/plugins;
-- prepare Modal model cache and symlinks;
-- launch a development Web UI session;
 - deploy a persistent Web UI endpoint;
 - inspect and clean Modal Volumes.
 
@@ -163,7 +163,10 @@ From the TUI:
 python manage.py
 ```
 
-Choose `Prepare / launch Modal`, then `Prepare models on Modal`.
+Choose `Run ComfyUI`, then `Normal Mode (Full)`. The pre-flight check loads
+`config.toml`, checks the remote model-link manifest, and runs prepare only when
+the manifest is missing, invalid, or missing target paths required by the current
+config.
 
 Direct command:
 
@@ -215,7 +218,10 @@ weights back into ComfyUI. Empty mode also skips prepare-time Modal secrets, so
 the `empty` Environment does not need your normal Hugging Face or CivitAI
 secrets.
 
-The TUI runs the same launcher from `Prepare / launch Modal` -> `Dev serve Web UI`.
+The TUI runs these launchers from `Run ComfyUI`:
+
+- `Normal Mode (Full)` -> `python serve.py --gpu <GPU>` after pre-flight.
+- `Minimal Mode (Empty)` -> `python serve.py --empty --gpu <GPU>` with T4 as the default.
 
 The Web UI is served through nginx on Modal port `8000`. ComfyUI itself listens
 only on `127.0.0.1:8188` inside the container. Keep using the Modal URL printed
@@ -245,7 +251,9 @@ endpoint without the normal model cache:
 python -m scripts.deploy_ui --empty --gpu T4
 ```
 
-The TUI runs this from `Prepare / launch Modal` -> `Deploy Web UI`.
+The TUI runs normal deploy from `Cloud Deployment` -> `Deploy Web UI`. Empty
+deploy is supported by the direct command above, but is not exposed in the first
+TUI deploy menu.
 
 GPU snapshots are configured for the deployed Web UI path. They help cold starts
 for `modal deploy`; they do not apply to `modal serve`.
