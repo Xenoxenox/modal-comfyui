@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from collections import defaultdict
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
@@ -60,6 +61,7 @@ CACHE_VOLUME = "comfy-cache"
 LOCAL_MODEL_CACHE_DIR = PurePosixPath("local-models")
 WEB_UI_GPU_ENV = "COMFYUI_WEB_GPU"
 DEFAULT_WEB_UI_GPU = "L4"
+EMPTY_WEB_UI_GPU = "T4"
 
 
 def _ensure_config() -> Config:
@@ -912,11 +914,11 @@ def _modal_env(gpu_choice: str | None = None) -> dict[str, str]:
     return env
 
 
-def _choose_web_gpu() -> str:
+def _choose_web_gpu(default: str = DEFAULT_WEB_UI_GPU) -> str:
     return ask_select(
         "Web UI GPU:",
-        choices=gpu_choice_items(DEFAULT_WEB_UI_GPU),
-        default=DEFAULT_WEB_UI_GPU,
+        choices=gpu_choice_items(default),
+        default=default,
         instruction=(
             "Used by server/ui.py for modal serve/deploy. "
             "Headless inference still asks for GPU per run."
@@ -924,24 +926,161 @@ def _choose_web_gpu() -> str:
     )
 
 
-def _deploy(cfg: Config) -> None:
+def _run_prepare_for_preflight(reason: str) -> None:
+    cmd = ["modal", "run", "server/app.py::prepare"]
+    print_command_panel(
+        "[bold yellow]Run Prepare[/bold yellow]",
+        cmd,
+        [("Reason", reason), ("Volume", CACHE_VOLUME)],
+        border_style="yellow",
+    )
+    subprocess.run(cmd, env=_modal_env(), check=True)
+
+
+def _normal_preflight(cfg: Config) -> None:
+    print_step("Run ComfyUI > Normal Mode > Pre-flight Check")
+    suffixes = _configured_model_target_suffixes(cfg)
+    if not suffixes:
+        print_result_panel(
+            "[bold green]Pre-flight Check[/bold green]",
+            [
+                ("config.toml", "loaded"),
+                ("Expected target paths", 0),
+                ("Remote manifest", "not needed"),
+                ("Action", "skip prepare"),
+            ],
+            border_style="green",
+        )
+        return
+
+    prepared_target_paths: list[str] = []
+    manifest_status = "checked"
+    manifest_error: str | None = None
+    try:
+        prepared = list_prepared_model_files(include_sizes=False)
+        prepared_target_paths = [item.target_path for item in prepared if item.target_path]
+    except Exception as exc:
+        manifest_status = "warning"
+        manifest_error = str(exc)
+
+    present_suffixes = {
+        suffix
+        for suffix in suffixes
+        if any(target_path.endswith(suffix) for target_path in prepared_target_paths)
+    }
+    missing_suffixes = sorted(suffixes - present_suffixes)
+    needs_prepare = manifest_error is not None or bool(missing_suffixes)
+    reason = "manifest read failed" if manifest_error else "missing configured model links"
+
+    rows = [
+        ("config.toml", "loaded"),
+        ("Expected target paths", len(suffixes)),
+        ("Remote manifest", manifest_status),
+        ("Manifest warning", manifest_error),
+        ("Missing target paths", len(missing_suffixes) if missing_suffixes else "none"),
+        ("Action", "run prepare" if needs_prepare else "skip prepare"),
+    ]
+    print_result_panel(
+        "[bold yellow]Pre-flight Check[/bold yellow]" if needs_prepare else "[bold green]Pre-flight Check[/bold green]",
+        rows,
+        border_style="yellow" if needs_prepare else "green",
+    )
+    for suffix in missing_suffixes[:10]:
+        console.print(f"  [yellow]missing[/] {suffix}")
+    if len(missing_suffixes) > 10:
+        console.print(f"  [dim]... {len(missing_suffixes) - 10} more[/]")
+
+    if needs_prepare:
+        _run_prepare_for_preflight(reason)
+
+
+def _launch_normal_web_ui(cfg: Config) -> None:
+    _normal_preflight(cfg)
+    gpu_choice = _choose_web_gpu(DEFAULT_WEB_UI_GPU)
+    print_result_panel(
+        "[bold blue]Web UI Dev Serve[/bold blue]",
+        [
+            ("Command", f"python serve.py --gpu {gpu_choice}"),
+            ("Mode", "normal"),
+            ("GPU", gpu_choice),
+            ("Encoding", "UTF-8 environment enabled"),
+        ],
+        border_style="blue",
+    )
+    print_command_panel(
+        "[bold blue]Confirm Command[/bold blue]",
+        [sys.executable, "serve.py", "--gpu", gpu_choice],
+        [("Mode", "normal"), ("GPU", gpu_choice)],
+        border_style="blue",
+    )
+    subprocess.run(
+        [sys.executable, "serve.py", "--gpu", gpu_choice],
+        env=_modal_env(),
+        check=True,
+    )
+
+
+def _launch_empty_web_ui() -> None:
+    gpu_choice = _choose_web_gpu(EMPTY_WEB_UI_GPU)
+    print_result_panel(
+        "[bold blue]Empty Web UI Dev Serve[/bold blue]",
+        [
+            ("Command", f"python serve.py --empty --gpu {gpu_choice}"),
+            ("Mode", "empty"),
+            ("GPU", gpu_choice),
+            ("Prepare", "skipped"),
+        ],
+        border_style="blue",
+    )
+    print_command_panel(
+        "[bold blue]Confirm Command[/bold blue]",
+        [sys.executable, "serve.py", "--empty", "--gpu", gpu_choice],
+        [("Mode", "empty"), ("GPU", gpu_choice), ("Prepare", "skipped")],
+        border_style="blue",
+    )
+    subprocess.run(
+        [sys.executable, "serve.py", "--empty", "--gpu", gpu_choice],
+        env=_modal_env(),
+        check=True,
+    )
+
+
+def _run_comfyui_menu(get_config: Callable[[], Config]) -> None:
     action = ask_select(
-        "Deploy action:",
+        "Run ComfyUI:",
         choices=[
             questionary.Choice(
-                "Prepare models on Modal",
-                value="prepare",
-                description="Download/link configured models into comfy-cache.",
+                "Normal Mode (Full)",
+                value="normal",
+                description="Pre-flight config/manifest check, prepare missing links, then launch Web UI.",
             ),
             questionary.Choice(
-                "Dev serve Web UI",
-                value="serve",
-                description="Run python serve.py with a selected Web UI GPU.",
+                "Minimal Mode (Empty)",
+                value="empty",
+                description="Launch empty workflow-editing Web UI with T4 default and no prepare.",
             ),
+            questionary.Choice(
+                "Back",
+                value="back",
+                description="Return to the main menu.",
+            ),
+        ],
+    )
+
+    if action == "normal":
+        _launch_normal_web_ui(get_config())
+    elif action == "empty":
+        _launch_empty_web_ui()
+
+
+def _cloud_deployment_menu() -> None:
+    action = ask_select(
+        "Cloud Deployment:",
+        choices=[
             questionary.Choice(
                 "Deploy Web UI",
                 value="deploy",
-                description="Run modal deploy server/ui.py with a selected Web UI GPU.",
+                description="Run python -m scripts.deploy_ui with a selected Web UI GPU.",
             ),
             questionary.Choice(
                 "Back",
@@ -952,13 +1091,12 @@ def _deploy(cfg: Config) -> None:
     )
 
     if action == "deploy":
-        gpu_choice = _choose_web_gpu()
+        gpu_choice = _choose_web_gpu(DEFAULT_WEB_UI_GPU)
         print_result_panel(
             "[bold blue]Web UI Deploy[/bold blue]",
             [
                 ("Command", f"python -m scripts.deploy_ui --gpu {gpu_choice}"),
                 ("GPU", gpu_choice),
-                ("Models", "Use Prepare models first if cache links are missing."),
             ],
             border_style="blue",
         )
@@ -970,65 +1108,6 @@ def _deploy(cfg: Config) -> None:
         )
         subprocess.run(
             [sys.executable, "-m", "scripts.deploy_ui", "--gpu", gpu_choice],
-            env=_modal_env(),
-            check=True,
-        )
-    elif action == "prepare":
-        dry_run = ask_confirm(
-            "Dry run only?",
-            default=False,
-            instruction="Shows the model/link plan without downloading or writing the manifest.",
-        )
-        force = False
-        if not dry_run:
-            force = ask_confirm(
-                "Force refresh remote downloads?",
-                default=False,
-                instruction="Re-download remote model files even when cache entries exist.",
-            )
-
-        cmd = ["modal", "run", "server/app.py::prepare"]
-        if dry_run:
-            cmd.append("--dry-run")
-        if force:
-            cmd.append("--force")
-
-        print_result_panel(
-            "[bold blue]Model Prepare[/bold blue]",
-            [
-                ("Command", " ".join(cmd)),
-                ("Volume", CACHE_VOLUME),
-                ("Dry run", dry_run),
-                ("Force refresh", force),
-            ],
-            border_style="blue",
-        )
-        print_command_panel(
-            "[bold blue]Confirm Command[/bold blue]",
-            cmd,
-            [("Dry run", dry_run), ("Force refresh", force), ("Volume", CACHE_VOLUME)],
-            border_style="blue",
-        )
-        subprocess.run(cmd, env=_modal_env(), check=True)
-    elif action == "serve":
-        gpu_choice = _choose_web_gpu()
-        print_result_panel(
-            "[bold blue]Web UI Dev Serve[/bold blue]",
-            [
-                ("Command", f"python serve.py --gpu {gpu_choice}"),
-                ("GPU", gpu_choice),
-                ("Encoding", "UTF-8 environment enabled"),
-            ],
-            border_style="blue",
-        )
-        print_command_panel(
-            "[bold blue]Confirm Command[/bold blue]",
-            [sys.executable, "serve.py", "--gpu", gpu_choice],
-            [("GPU", gpu_choice), ("Mode", "dev serve")],
-            border_style="blue",
-        )
-        subprocess.run(
-            [sys.executable, "serve.py", "--gpu", gpu_choice],
             env=_modal_env(),
             check=True,
         )
@@ -1097,23 +1176,33 @@ def _plugins_menu(cfg: Config) -> None:
 def main() -> None:
     print_banner(
         "ComfyUI Manager",
-        "Configure models/plugins, prepare Modal volumes, and launch the Web UI.",
+        "Configure models/plugins, run ComfyUI, deploy Web UI, and manage Modal volumes.",
     )
 
-    try:
-        cfg = _ensure_config()
-    except ConfigError as e:
-        print(f"  {R}{B}Config error:{RST} {e}")
-        sys.exit(1)
+    cfg: Config | None = None
 
-    n_models = len(cfg.models)
-    n_plugins = len(cfg.plugins)
-    print_status(f"{n_models} models - {n_plugins} plugins", style="green")
+    def get_config() -> Config:
+        nonlocal cfg
+        if cfg is None:
+            try:
+                cfg = _ensure_config()
+            except ConfigError as e:
+                print(f"  {R}{B}Config error:{RST} {e}")
+                sys.exit(1)
+            n_models = len(cfg.models)
+            n_plugins = len(cfg.plugins)
+            print_status(f"{n_models} models - {n_plugins} plugins", style="green")
+        return cfg
 
     while True:
         choice = ask_select(
             "What do you want to do?",
             choices=[
+                questionary.Choice(
+                    "Run ComfyUI",
+                    value="run",
+                    description="Launch normal or empty Web UI modes.",
+                ),
                 questionary.Choice(
                     "Manage models",
                     value="models",
@@ -1125,9 +1214,9 @@ def main() -> None:
                     description="Add/list/remove ComfyUI custom node config.",
                 ),
                 questionary.Choice(
-                    "Prepare / launch Modal",
-                    value="deploy",
-                    description="Prepare comfy-cache, choose Web UI GPU, serve or deploy.",
+                    "Cloud Deployment",
+                    value="cloud",
+                    description="Deploy persistent Web UI endpoint.",
                 ),
                 questionary.Choice(
                     "Manage Modal Volumes",
@@ -1140,17 +1229,23 @@ def main() -> None:
 
         if choice == "exit":
             break
+        elif choice == "run":
+            print_step("Main > Run ComfyUI")
+            _run_comfyui_menu(get_config)
         elif choice == "models":
             print_step("Main > Models")
+            cfg = get_config()
             _models_menu(cfg)
         elif choice == "plugins":
             print_step("Main > Plugins")
+            cfg = get_config()
             _plugins_menu(cfg)
-        elif choice == "deploy":
-            print_step("Main > Modal")
-            _deploy(cfg)
+        elif choice == "cloud":
+            print_step("Main > Cloud Deployment")
+            _cloud_deployment_menu()
         elif choice == "volumes":
             print_step("Main > Volumes")
+            cfg = get_config()
             orphan_cache_paths = {
                 item.cache_path
                 for item in _orphan_prepared_model_files(cfg, include_sizes=False)
