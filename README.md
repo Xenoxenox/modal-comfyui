@@ -42,7 +42,7 @@ modal setup
 > ```bash
 > uv run modal setup
 > ```
-> Or just activate .env before entering such commands:
+> Or just activate .venv before entering such commands:
 > ```bash
 > source .venv/bin/activate
 > ```
