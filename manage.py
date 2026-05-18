@@ -67,6 +67,7 @@ DEFAULT_CIVITAI_SECRET_NAME = "civitai-api-key"
 DISABLED_SECRET_NAMES = {"", "none", "false"}
 DEFAULT_WEB_UI_GPU = "L4"
 EMPTY_WEB_UI_GPU = "T4"
+BACK_ACTION = "back"
 
 MODAL_SECRET_SPECS = [
     {
@@ -219,10 +220,14 @@ def _modal_secret_names() -> tuple[set[str], str | None]:
 def _modal_secret_statuses(
     secret_names: set[str],
     list_error: str | None = None,
+    configured_overrides: dict[str, str] | None = None,
 ) -> list[ModalSecretStatus]:
     statuses: list[ModalSecretStatus] = []
+    configured_overrides = configured_overrides or {}
     for spec in MODAL_SECRET_SPECS:
-        secret_name = _configured_secret_name(spec["env_var"], spec["default_name"])
+        secret_name = configured_overrides.get(spec["env_var"])
+        if secret_name is None:
+            secret_name = _configured_secret_name(spec["env_var"], spec["default_name"])
         if secret_name is None:
             status = "disabled"
             detail = f"disabled via {spec['env_var']}"
@@ -262,9 +267,14 @@ def _modal_secret_status_rows(statuses: list[ModalSecretStatus]) -> list[tuple[s
     return rows
 
 
-def _print_modal_secret_status() -> None:
+def _print_modal_secret_status(
+    configured_overrides: dict[str, str] | None = None,
+    known_existing: set[str] | None = None,
+) -> None:
     secret_names, list_error = _modal_secret_names()
-    statuses = _modal_secret_statuses(secret_names, list_error)
+    if known_existing:
+        secret_names.update(known_existing)
+    statuses = _modal_secret_statuses(secret_names, list_error, configured_overrides)
     rows = _modal_secret_status_rows(statuses)
     missing = any(status.status == "missing" for status in statuses)
     unknown = any(status.status == "unknown" for status in statuses)
@@ -302,22 +312,30 @@ def _configure_modal_secrets_menu() -> None:
         else:
             description = f"Create {secret_name} with key {spec['key']}."
         choices.append(questionary.Choice(spec["label"], value=spec, description=description))
-    choices.append(questionary.Choice("Back", value=None, description="Return to the main menu."))
+    choices.append(questionary.Choice("Back", value=BACK_ACTION, description="Return to the main menu."))
 
     spec = ask_select(
         "Configure Modal Secret:",
         choices=choices,
         instruction="Tokens are sent to Modal only and are not written to config.toml or logs.",
     )
-    if spec is None:
+    if spec == BACK_ACTION:
         return
 
-    secret_name = _configured_secret_name(spec["env_var"], spec["default_name"])
+    default_secret_name = _configured_secret_name(spec["env_var"], spec["default_name"])
+    if default_secret_name is None:
+        default_secret_name = spec["default_name"]
+    secret_name = questionary.autocomplete(
+        "Modal Secret name:",
+        choices=[spec["default_name"], *sorted(secret_names - {spec["default_name"]})],
+        default=default_secret_name,
+        style=STYLE,
+    ).ask()
     if secret_name is None:
-        print_status(
-            f"{spec['env_var']} disables this secret. Change the local env var first.",
-            style="yellow",
-        )
+        raise KeyboardInterrupt
+    secret_name = secret_name.strip()
+    if not secret_name:
+        print_status("No secret name entered; secret unchanged.", style="yellow")
         return
 
     token = questionary.password(
@@ -332,7 +350,11 @@ def _configure_modal_secrets_menu() -> None:
         return
 
     _upsert_modal_secret(secret_name, spec["key"], token)
+    os.environ[spec["env_var"]] = secret_name
     print_status(f"Modal Secret {secret_name} is configured.", style="green")
+    _print_modal_secret_status(
+        known_existing={secret_name},
+    )
 
 
 # ── HuggingFace Auto-Detect ──
@@ -1424,7 +1446,6 @@ def main() -> None:
         elif choice == "secrets":
             print_step("Main > Configure Modal Secrets")
             _configure_modal_secrets_menu()
-            _print_modal_secret_status()
         elif choice == "volumes":
             print_step("Main > Volumes")
             cfg = get_config()
