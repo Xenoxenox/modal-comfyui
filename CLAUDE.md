@@ -75,7 +75,12 @@ python -m scripts.deploy_ui --empty --gpu T4
 
 Create secrets: `modal secret create <name> KEY=value`
 
-Set either env var to an empty string, `none`, or `false` to skip mounting that secret. This supports public Hugging Face models and configs that do not use CivitAI. Do not put token values in `config.toml`, docs, or logs.
+If a configured Modal secret is missing in the active Modal Environment,
+prepare skips mounting it and continues. This supports public Hugging Face
+models and configs that do not use CivitAI. Private or gated downloads still
+require the matching Modal secret. Set either env var to an empty string,
+`none`, or `false` to skip mounting that secret explicitly. Do not put token
+values in `config.toml`, docs, or logs.
 
 ## Windows / Encoding Notes
 

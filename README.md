@@ -134,6 +134,11 @@ For private downloads, create Modal secrets with the keys expected inside Modal:
 | `MODAL_HF_SECRET_NAME` | `ComfyUI` | `HF_TOKEN` |
 | `MODAL_CIVITAI_SECRET_NAME` | `civitai-api-key` | `CIVITAI_API_KEY` |
 
+If a configured Modal secret does not exist in the active Modal Environment,
+prepare skips mounting that secret and continues. Public Hugging Face models and
+direct public URLs can run without creating these secrets; private or gated
+downloads still require the matching Modal secret.
+
 > [!TIP]
 > Show currently used Modal secrets:
 > ```bash

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import modal
+from modal.exception import NotFoundError
 
 # ── Volumes ──
 cache_vol = modal.Volume.from_name("comfy-cache", create_if_missing=True)
@@ -31,6 +32,8 @@ DEFAULT_CONFIG_PROFILE = "default"
 EMPTY_CONFIG_PROFILE = "empty"
 
 root_dir = Path(__file__).parent.parent
+_secret_exists_cache: dict[str, bool] = {}
+_missing_secret_warnings: set[str] = set()
 
 
 # ── Config Profile Selection ──
@@ -80,6 +83,17 @@ def _configured_secret_name(env_var: str, default: str) -> str | None:
     return secret_name
 
 
+def _modal_secret_exists(secret_name: str) -> bool:
+    if secret_name not in _secret_exists_cache:
+        try:
+            modal.Secret.from_name(secret_name).info()
+        except NotFoundError:
+            _secret_exists_cache[secret_name] = False
+        else:
+            _secret_exists_cache[secret_name] = True
+    return _secret_exists_cache[secret_name]
+
+
 def get_model_prepare_secrets() -> list[modal.Secret]:
     if _config_profile() == EMPTY_CONFIG_PROFILE:
         return []
@@ -95,6 +109,16 @@ def get_model_prepare_secrets() -> list[modal.Secret]:
     seen: set[str] = set()
     for secret_name in secret_names:
         if secret_name is None or secret_name in seen:
+            continue
+        if not _modal_secret_exists(secret_name):
+            if secret_name not in _missing_secret_warnings:
+                print(
+                    f"Warning: Modal Secret {secret_name!r} not found; "
+                    "prepare will run without injecting it.",
+                    flush=True,
+                )
+                _missing_secret_warnings.add(secret_name)
+            seen.add(secret_name)
             continue
         secrets.append(modal.Secret.from_name(secret_name))
         seen.add(secret_name)
