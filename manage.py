@@ -60,8 +60,39 @@ EXAMPLE_PATH = Path(__file__).parent / "config.toml.example"
 CACHE_VOLUME = "comfy-cache"
 LOCAL_MODEL_CACHE_DIR = PurePosixPath("local-models")
 WEB_UI_GPU_ENV = "COMFYUI_WEB_GPU"
+MODAL_HF_SECRET_NAME_ENV = "MODAL_HF_SECRET_NAME"
+MODAL_CIVITAI_SECRET_NAME_ENV = "MODAL_CIVITAI_SECRET_NAME"
+DEFAULT_HF_SECRET_NAME = "ComfyUI"
+DEFAULT_CIVITAI_SECRET_NAME = "civitai-api-key"
+DISABLED_SECRET_NAMES = {"", "none", "false"}
 DEFAULT_WEB_UI_GPU = "L4"
 EMPTY_WEB_UI_GPU = "T4"
+
+MODAL_SECRET_SPECS = [
+    {
+        "label": "Hugging Face",
+        "env_var": MODAL_HF_SECRET_NAME_ENV,
+        "default_name": DEFAULT_HF_SECRET_NAME,
+        "key": "HF_TOKEN",
+        "purpose": "private or gated Hugging Face model downloads",
+    },
+    {
+        "label": "CivitAI",
+        "env_var": MODAL_CIVITAI_SECRET_NAME_ENV,
+        "default_name": DEFAULT_CIVITAI_SECRET_NAME,
+        "key": "CIVITAI_API_KEY",
+        "purpose": "private or token-gated CivitAI downloads",
+    },
+]
+
+
+@dataclasses.dataclass(frozen=True)
+class ModalSecretStatus:
+    label: str
+    name: str | None
+    key: str
+    status: str
+    detail: str
 
 
 def _ensure_config() -> Config:
@@ -161,6 +192,147 @@ def _upload_to_cache(local_path: Path, cache_filename: str) -> bool:
 
     print(f"  {G}Uploaded.{RST}")
     return True
+
+
+# ── Modal Secrets ──
+
+
+def _configured_secret_name(env_var: str, default: str) -> str | None:
+    secret_name = os.environ.get(env_var, default).strip()
+    if secret_name.lower() in DISABLED_SECRET_NAMES:
+        return None
+    return secret_name
+
+
+def _modal_secret_names() -> tuple[set[str], str | None]:
+    try:
+        import modal
+    except ImportError:
+        return set(), "modal is required. Run: uv sync"
+
+    try:
+        return {secret.name for secret in modal.Secret.objects.list() if secret.name}, None
+    except Exception as exc:
+        return set(), str(exc)
+
+
+def _modal_secret_statuses(
+    secret_names: set[str],
+    list_error: str | None = None,
+) -> list[ModalSecretStatus]:
+    statuses: list[ModalSecretStatus] = []
+    for spec in MODAL_SECRET_SPECS:
+        secret_name = _configured_secret_name(spec["env_var"], spec["default_name"])
+        if secret_name is None:
+            status = "disabled"
+            detail = f"disabled via {spec['env_var']}"
+        elif list_error:
+            status = "unknown"
+            detail = list_error
+        elif secret_name in secret_names:
+            status = "ok"
+            detail = f"{secret_name} ({spec['key']})"
+        else:
+            status = "missing"
+            detail = f"{secret_name} ({spec['key']})"
+        statuses.append(
+            ModalSecretStatus(
+                label=spec["label"],
+                name=secret_name,
+                key=spec["key"],
+                status=status,
+                detail=detail,
+            )
+        )
+    return statuses
+
+
+def _modal_secret_status_rows(statuses: list[ModalSecretStatus]) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    for status in statuses:
+        if status.status == "ok":
+            value = f"OK: {status.detail}"
+        elif status.status == "missing":
+            value = f"MISSING: {status.detail}"
+        elif status.status == "disabled":
+            value = status.detail
+        else:
+            value = f"UNKNOWN: {status.detail}"
+        rows.append((status.label, value))
+    return rows
+
+
+def _print_modal_secret_status() -> None:
+    secret_names, list_error = _modal_secret_names()
+    statuses = _modal_secret_statuses(secret_names, list_error)
+    rows = _modal_secret_status_rows(statuses)
+    missing = any(status.status == "missing" for status in statuses)
+    unknown = any(status.status == "unknown" for status in statuses)
+    print_result_panel(
+        "[bold yellow]Modal Secrets[/bold yellow]" if missing or unknown else "[bold green]Modal Secrets[/bold green]",
+        rows,
+        border_style="yellow" if missing or unknown else "green",
+    )
+
+
+def _upsert_modal_secret(secret_name: str, key: str, value: str) -> None:
+    import modal
+    from modal.exception import NotFoundError
+
+    try:
+        secret = modal.Secret.from_name(secret_name)
+        secret.info()
+    except NotFoundError:
+        modal.Secret.objects.create(secret_name, {key: value})
+    else:
+        secret.update({key: value})
+
+
+def _configure_modal_secrets_menu() -> None:
+    secret_names, list_error = _modal_secret_names()
+    choices = []
+    for spec in MODAL_SECRET_SPECS:
+        secret_name = _configured_secret_name(spec["env_var"], spec["default_name"])
+        if secret_name is None:
+            description = f"Disabled via {spec['env_var']}."
+        elif list_error:
+            description = f"Configure {secret_name} with key {spec['key']}."
+        elif secret_name in secret_names:
+            description = f"Update {secret_name} with key {spec['key']}."
+        else:
+            description = f"Create {secret_name} with key {spec['key']}."
+        choices.append(questionary.Choice(spec["label"], value=spec, description=description))
+    choices.append(questionary.Choice("Back", value=None, description="Return to the main menu."))
+
+    spec = ask_select(
+        "Configure Modal Secret:",
+        choices=choices,
+        instruction="Tokens are sent to Modal only and are not written to config.toml or logs.",
+    )
+    if spec is None:
+        return
+
+    secret_name = _configured_secret_name(spec["env_var"], spec["default_name"])
+    if secret_name is None:
+        print_status(
+            f"{spec['env_var']} disables this secret. Change the local env var first.",
+            style="yellow",
+        )
+        return
+
+    token = questionary.password(
+        f"{spec['key']} for Modal Secret {secret_name}:",
+        style=STYLE,
+    ).ask()
+    if token is None:
+        raise KeyboardInterrupt
+    token = token.strip()
+    if not token:
+        print_status("No token entered; secret unchanged.", style="yellow")
+        return
+
+    _upsert_modal_secret(secret_name, spec["key"], token)
+    print_status(f"Modal Secret {secret_name} is configured.", style="green")
 
 
 # ── HuggingFace Auto-Detect ──
@@ -1178,6 +1350,7 @@ def main() -> None:
         "ComfyUI Manager",
         "Configure models/plugins, run ComfyUI, deploy Web UI, and manage Modal volumes.",
     )
+    _print_modal_secret_status()
 
     cfg: Config | None = None
 
@@ -1219,6 +1392,11 @@ def main() -> None:
                     description="Deploy persistent Web UI endpoint.",
                 ),
                 questionary.Choice(
+                    "Configure Modal Secrets",
+                    value="secrets",
+                    description="Create or update Hugging Face and CivitAI Modal secrets.",
+                ),
+                questionary.Choice(
                     "Manage Modal Volumes",
                     value="volumes",
                     description="List comfy-cache/comfy-output or clean old output sessions.",
@@ -1243,6 +1421,10 @@ def main() -> None:
         elif choice == "cloud":
             print_step("Main > Cloud Deployment")
             _cloud_deployment_menu()
+        elif choice == "secrets":
+            print_step("Main > Configure Modal Secrets")
+            _configure_modal_secrets_menu()
+            _print_modal_secret_status()
         elif choice == "volumes":
             print_step("Main > Volumes")
             cfg = get_config()
