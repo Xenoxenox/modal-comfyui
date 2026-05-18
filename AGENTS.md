@@ -14,7 +14,7 @@ This file provides guidance to agents when working with code in this repository.
 - Empty Web UI mode must not mount default prepare secrets; the `empty` Modal Environment is expected to work without `ComfyUI` or `civitai-api-key` secrets.
 - Do not treat an empty config alone as empty mode: an old model manifest in the same `comfy-cache` would still symlink prepared models back into ComfyUI.
 - Model assets are cached in `comfy-cache`, then symlinked into ComfyUI model dirs (do not assume direct file copies).
-- `prepare_models` mounts Modal secrets by name from local env vars: `MODAL_HF_SECRET_NAME` defaults to `ComfyUI`, and `MODAL_CIVITAI_SECRET_NAME` defaults to `civitai-api-key`. Missing default secrets are skipped so public downloads still run; empty string, `none`, or `false` disables that secret.
+- `prepare_models` mounts Modal secrets by name from local env vars or gitignored `config.toml` `[modal.secrets]`: `MODAL_HF_SECRET_NAME`/`hf_secret_name` defaults to `ComfyUI`, and `MODAL_CIVITAI_SECRET_NAME`/`civitai_secret_name` defaults to `civitai-api-key`. Missing default secrets are skipped so public downloads still run; empty string, `none`, or `false` disables that secret.
 - Secret names are configurable, but token env keys inside Modal stay `HF_TOKEN` and `CIVITAI_API_KEY`; do not put tokens in `config.toml`, docs, or logs.
 - External model downloads depend on `aria2c` (installed in image) and run with suppressed stdout/stderr; failures surface via non-zero exit only.
 - Headless inference uses the `serialized=True` + `with app.run():` pattern to allow dynamic GPU selection at runtime. The function is defined inside the client and dispatched to the server.

@@ -3,7 +3,14 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
-from config.schema import Config, ModelSource, ModelSpec, PluginSpec, VALID_MODEL_DIRS
+from config.schema import (
+    Config,
+    ModalSecrets,
+    ModelSource,
+    ModelSpec,
+    PluginSpec,
+    VALID_MODEL_DIRS,
+)
 
 COMFY_ROOT = "/root/comfy/ComfyUI"
 ROOT = Path(__file__).parent.parent
@@ -119,6 +126,19 @@ def _parse_plugin(key: str, data: dict) -> PluginSpec:
     )
 
 
+def _parse_modal_secrets(raw: dict) -> ModalSecrets:
+    modal = raw.get("modal", {})
+    if not isinstance(modal, dict):
+        raise ConfigError("modal: must be a table")
+    secrets = modal.get("secrets", {})
+    if not isinstance(secrets, dict):
+        raise ConfigError("modal.secrets: must be a table")
+    return ModalSecrets(
+        hf_secret_name=secrets.get("hf_secret_name"),
+        civitai_secret_name=secrets.get("civitai_secret_name"),
+    )
+
+
 def load_config(path: Path | None = None) -> Config:
     if path is None:
         for candidate in _CONFIG_SEARCH_PATHS:
@@ -142,7 +162,11 @@ def load_config(path: Path | None = None) -> Config:
     for key, data in raw.get("plugins", {}).items():
         plugins[key] = _parse_plugin(key, data)
 
-    return Config(models=models, plugins=plugins)
+    return Config(
+        models=models,
+        plugins=plugins,
+        modal_secrets=_parse_modal_secrets(raw),
+    )
 
 
 def save_config(config: Config, path: Path | None = None) -> None:
@@ -190,6 +214,14 @@ def save_config(config: Config, path: Path | None = None) -> None:
             if spec.repo:
                 entry["repo"] = spec.repo
             data["plugins"][key] = entry
+
+    secret_data: dict[str, str] = {}
+    if config.modal_secrets.hf_secret_name:
+        secret_data["hf_secret_name"] = config.modal_secrets.hf_secret_name
+    if config.modal_secrets.civitai_secret_name:
+        secret_data["civitai_secret_name"] = config.modal_secrets.civitai_secret_name
+    if secret_data:
+        data["modal"] = {"secrets": secret_data}
 
     with open(path, "wb") as f:
         tomli_w.dump(data, f)

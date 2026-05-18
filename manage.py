@@ -25,7 +25,14 @@ except ImportError:
     raise
 
 from config.loader import load_config, save_config, ConfigError
-from config.schema import Config, ModelSource, ModelSpec, PluginSpec, VALID_MODEL_DIRS
+from config.schema import (
+    Config,
+    ModalSecrets,
+    ModelSource,
+    ModelSpec,
+    PluginSpec,
+    VALID_MODEL_DIRS,
+)
 from scripts.manage_volumes import volume_management_menu
 from scripts.manage_volumes import list_prepared_model_files, remove_volume_model_files
 from scripts.tui import (
@@ -205,6 +212,42 @@ def _configured_secret_name(env_var: str, default: str) -> str | None:
     return secret_name
 
 
+def _modal_secret_config_name(cfg: Config | None, env_var: str) -> str | None:
+    if cfg is None:
+        return None
+    if env_var == MODAL_HF_SECRET_NAME_ENV:
+        return cfg.modal_secrets.hf_secret_name
+    if env_var == MODAL_CIVITAI_SECRET_NAME_ENV:
+        return cfg.modal_secrets.civitai_secret_name
+    return None
+
+
+def _effective_secret_name(cfg: Config | None, spec: dict) -> str | None:
+    secret_name = os.environ.get(spec["env_var"])
+    if secret_name is None:
+        secret_name = _modal_secret_config_name(cfg, spec["env_var"])
+    if secret_name is None:
+        secret_name = spec["default_name"]
+    secret_name = secret_name.strip()
+    if secret_name.lower() in DISABLED_SECRET_NAMES:
+        return None
+    return secret_name
+
+
+def _set_modal_secret_config(cfg: Config, env_var: str, secret_name: str) -> None:
+    current = cfg.modal_secrets
+    hf_secret_name = current.hf_secret_name
+    civitai_secret_name = current.civitai_secret_name
+    if env_var == MODAL_HF_SECRET_NAME_ENV:
+        hf_secret_name = secret_name
+    elif env_var == MODAL_CIVITAI_SECRET_NAME_ENV:
+        civitai_secret_name = secret_name
+    cfg.modal_secrets = ModalSecrets(
+        hf_secret_name=hf_secret_name,
+        civitai_secret_name=civitai_secret_name,
+    )
+
+
 def _modal_secret_names() -> tuple[set[str], str | None]:
     try:
         import modal
@@ -220,6 +263,7 @@ def _modal_secret_names() -> tuple[set[str], str | None]:
 def _modal_secret_statuses(
     secret_names: set[str],
     list_error: str | None = None,
+    cfg: Config | None = None,
     configured_overrides: dict[str, str] | None = None,
 ) -> list[ModalSecretStatus]:
     statuses: list[ModalSecretStatus] = []
@@ -227,7 +271,7 @@ def _modal_secret_statuses(
     for spec in MODAL_SECRET_SPECS:
         secret_name = configured_overrides.get(spec["env_var"])
         if secret_name is None:
-            secret_name = _configured_secret_name(spec["env_var"], spec["default_name"])
+            secret_name = _effective_secret_name(cfg, spec)
         if secret_name is None:
             status = "disabled"
             detail = f"disabled via {spec['env_var']}"
@@ -268,13 +312,14 @@ def _modal_secret_status_rows(statuses: list[ModalSecretStatus]) -> list[tuple[s
 
 
 def _print_modal_secret_status(
+    cfg: Config | None = None,
     configured_overrides: dict[str, str] | None = None,
     known_existing: set[str] | None = None,
 ) -> None:
     secret_names, list_error = _modal_secret_names()
     if known_existing:
         secret_names.update(known_existing)
-    statuses = _modal_secret_statuses(secret_names, list_error, configured_overrides)
+    statuses = _modal_secret_statuses(secret_names, list_error, cfg, configured_overrides)
     rows = _modal_secret_status_rows(statuses)
     missing = any(status.status == "missing" for status in statuses)
     unknown = any(status.status == "unknown" for status in statuses)
@@ -298,11 +343,11 @@ def _upsert_modal_secret(secret_name: str, key: str, value: str) -> None:
         secret.update({key: value})
 
 
-def _configure_modal_secrets_menu() -> None:
+def _configure_modal_secrets_menu(cfg: Config) -> None:
     secret_names, list_error = _modal_secret_names()
     choices = []
     for spec in MODAL_SECRET_SPECS:
-        secret_name = _configured_secret_name(spec["env_var"], spec["default_name"])
+        secret_name = _effective_secret_name(cfg, spec)
         if secret_name is None:
             description = f"Disabled via {spec['env_var']}."
         elif list_error:
@@ -322,7 +367,7 @@ def _configure_modal_secrets_menu() -> None:
     if spec == BACK_ACTION:
         return
 
-    default_secret_name = _configured_secret_name(spec["env_var"], spec["default_name"])
+    default_secret_name = _effective_secret_name(cfg, spec)
     if default_secret_name is None:
         default_secret_name = spec["default_name"]
     secret_name = questionary.autocomplete(
@@ -351,8 +396,11 @@ def _configure_modal_secrets_menu() -> None:
 
     _upsert_modal_secret(secret_name, spec["key"], token)
     os.environ[spec["env_var"]] = secret_name
+    _set_modal_secret_config(cfg, spec["env_var"], secret_name)
+    save_config(cfg, CONFIG_PATH)
     print_status(f"Modal Secret {secret_name} is configured.", style="green")
     _print_modal_secret_status(
+        cfg,
         known_existing={secret_name},
     )
 
@@ -1372,7 +1420,6 @@ def main() -> None:
         "ComfyUI Manager",
         "Configure models/plugins, run ComfyUI, deploy Web UI, and manage Modal volumes.",
     )
-    _print_modal_secret_status()
 
     cfg: Config | None = None
 
@@ -1388,6 +1435,8 @@ def main() -> None:
             n_plugins = len(cfg.plugins)
             print_status(f"{n_models} models - {n_plugins} plugins", style="green")
         return cfg
+
+    _print_modal_secret_status(get_config())
 
     while True:
         choice = ask_select(
@@ -1445,7 +1494,7 @@ def main() -> None:
             _cloud_deployment_menu()
         elif choice == "secrets":
             print_step("Main > Configure Modal Secrets")
-            _configure_modal_secrets_menu()
+            _configure_modal_secrets_menu(get_config())
         elif choice == "volumes":
             print_step("Main > Volumes")
             cfg = get_config()

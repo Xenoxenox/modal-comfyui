@@ -66,7 +66,7 @@ python -m scripts.deploy_ui --empty --gpu T4
 
 ## Modal Secrets for Model Prepare
 
-`modal run server/app.py::prepare` mounts secrets for private model downloads. Secret names are configurable with local environment variables, while the keys inside Modal stay fixed:
+`modal run server/app.py::prepare` mounts secrets for private model downloads. Secret names are configurable with local environment variables or gitignored `config.toml` `[modal.secrets]`, while the keys inside Modal stay fixed:
 
 | Environment variable | Default Modal secret | Key inside secret | Purpose |
 |----------------------|----------------------|-------------------|---------|
@@ -74,6 +74,9 @@ python -m scripts.deploy_ui --empty --gpu T4
 | `MODAL_CIVITAI_SECRET_NAME` | `civitai-api-key` | `CIVITAI_API_KEY` | CivitAI download token |
 
 Create secrets: `modal secret create <name> KEY=value`
+
+The TUI writes only non-sensitive Secret names to `config.toml`; tokens stay in
+Modal Secrets. Local environment variables override `config.toml` when set.
 
 If a configured Modal secret is missing in the active Modal Environment,
 prepare skips mounting it and continues. This supports public Hugging Face

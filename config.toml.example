@@ -14,6 +14,11 @@
 #   embeddings, gligen, hypernetworks, loras, photomaker, style_models,
 #   unet, upscale_models, vae, vae_approx
 
+# Modal Secret names are non-sensitive. Tokens stay in Modal Secrets only.
+# [modal.secrets]
+# hf_secret_name = "ComfyUI"
+# civitai_secret_name = "civitai-api-key"
+
 # ── Standalone Models ──
 
 # [models.illustrious-xl]

@@ -54,6 +54,13 @@ class PluginSpec:
 
 
 @dataclass(frozen=True)
+class ModalSecrets:
+    hf_secret_name: str | None = None
+    civitai_secret_name: str | None = None
+
+
+@dataclass
 class Config:
     models: dict[str, ModelSpec]
     plugins: dict[str, PluginSpec]
+    modal_secrets: ModalSecrets = ModalSecrets()

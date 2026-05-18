@@ -65,22 +65,41 @@ def _prepare_secret_env() -> dict[str, str]:
             MODAL_CIVITAI_SECRET_NAME_ENV: "none",
         }
     return {
-        MODAL_HF_SECRET_NAME_ENV: os.environ.get(
+        MODAL_HF_SECRET_NAME_ENV: _configured_secret_name(
             MODAL_HF_SECRET_NAME_ENV,
             DEFAULT_HF_SECRET_NAME,
-        ),
-        MODAL_CIVITAI_SECRET_NAME_ENV: os.environ.get(
+        )
+        or "none",
+        MODAL_CIVITAI_SECRET_NAME_ENV: _configured_secret_name(
             MODAL_CIVITAI_SECRET_NAME_ENV,
             DEFAULT_CIVITAI_SECRET_NAME,
-        ),
+        )
+        or "none",
     }
 
 
 def _configured_secret_name(env_var: str, default: str) -> str | None:
-    secret_name = os.environ.get(env_var, default).strip()
+    secret_name = os.environ.get(env_var)
+    if secret_name is None:
+        secret_name = _configured_secret_name_from_config(env_var) or default
+    secret_name = secret_name.strip()
     if secret_name.lower() in DISABLED_SECRET_NAMES:
         return None
     return secret_name
+
+
+def _configured_secret_name_from_config(env_var: str) -> str | None:
+    try:
+        from config.loader import load_config
+
+        modal_secrets = load_config(_local_config_path()).modal_secrets
+    except Exception:
+        return None
+    if env_var == MODAL_HF_SECRET_NAME_ENV:
+        return modal_secrets.hf_secret_name
+    if env_var == MODAL_CIVITAI_SECRET_NAME_ENV:
+        return modal_secrets.civitai_secret_name
+    return None
 
 
 def _modal_secret_exists(secret_name: str) -> bool:
