@@ -17,9 +17,9 @@ python serve.py --empty --gpu T4  # empty workflow-editing Web UI in Modal Envir
 modal serve server/ui.py       # dev Web UI (manual)
 python -m scripts.deploy_ui --gpu L4  # production Web UI — persistent endpoint
 python -m scripts.deploy_ui --empty --gpu T4  # persistent empty workflow-editing endpoint
-python -m client.infer         # headless inference — interactive GPU/workflow selection
+python -m client.infer         # headless inference — interactive or CLI GPU/workflow selection
 python -m client.watch <url>   # local watcher — download new Web UI outputs into output/
-python -m scripts.manage_volumes  # manage Modal Volumes (tree/list/clean)
+python -m scripts.manage_volumes  # manage Modal Volumes (tree/list/download/clean)
 ```
 
 No test framework or linter is configured in this repo.
@@ -131,7 +131,7 @@ modal-comfyui/
 | Volume | Mount Point | Contents |
 |--------|------------|----------|
 | `comfy-cache` | `/cache` | HF model cache, external model downloads, custom nodes |
-| `comfy-output` | `/output` | Generated images (currently unused — output not yet wired) |
+| `comfy-output` | `/output` | Headless inference outputs by session id |
 
 The table above describes a single Modal Environment. Empty mode uses the
 `empty` Environment, where same-named Volumes are isolated from the normal
@@ -201,7 +201,8 @@ node_id = "comfyui-my-nodes"   # or use repo = "https://github.com/..."
 - Web UI GPU defaults to `L4`; use `python serve.py --gpu <GPU>` or `python -m scripts.deploy_ui --gpu <GPU>` instead of setting env vars manually
 - GPU snapshots (`enable_gpu_snapshot`) for faster cold starts — **only works with `modal deploy`, not `modal serve`**
 - Scales to zero after 60s idle (`scaledown_window`)
-- output_vol is imported but **not yet mounted** — generated images currently stay in the container and are lost on scale-down
+- Headless inference mounts `comfy-output` and writes generated files under `/output/<session-id>/`
+- Detached headless runs print an App ID, dashboard URL, function call URL, logs command, and stop command; the stop command is only a manual fallback if the app lingers
 
 ### Local Output Watcher (`client/watch.py`)
 

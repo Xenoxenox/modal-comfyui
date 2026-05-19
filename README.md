@@ -335,8 +335,9 @@ python manage.py
 ```
 
 Choose `Manage Modal Volumes` to list cache/output contents, refresh recursive
-usage, delete prepared model files, prune orphaned prepared models, or clean old
-output sessions.
+usage, download a `comfy-output` session into local `output/<session-id>/`,
+delete prepared model files, prune orphaned prepared models, or clean old output
+sessions.
 
 Direct commands:
 
@@ -354,7 +355,7 @@ The volume management commands inspect the current Modal Environment selected
 by Modal. Empty mode uses the `empty` Environment, so its same-named Volumes are
 separate from the normal environment's `comfy-cache` and `comfy-output`.
 
-## Headless inference (UNTESTED; TO BE UPDATED IN NEXT TAG)
+## Headless inference
 
 Headless inference runs a ComfyUI API-format workflow without opening the
 browser. Put workflow JSON files in `workflows/`, then run:
@@ -371,6 +372,9 @@ The client prompts for:
 - optional seed override for `KSampler` and `KSamplerAdvanced` nodes;
 - attached or detached launch mode.
 
+The GPU picker shows short descriptions for each choice so you can compare cost
+and capacity without leaving the terminal.
+
 The local `client/` code defines a per-invocation Modal app so the GPU can be
 chosen at runtime. The remote `server/` code starts ComfyUI in the Modal
 container, executes the workflow, writes results under `/output/<session-id>`,
@@ -380,6 +384,11 @@ Attached mode waits for completion and downloads outputs. Detached mode returns
 after submission with the App ID, dashboard links, Function Call ID, local log,
 logs command, and stop command. The stop command is only a manual fallback if the
 app lingers; completed jobs are not automatically stopped by the client.
+
+After a run finishes, the client prints a result panel with the session ID,
+local output path, and generated files. If you need to revisit a previous run,
+use `python manage.py` or the volume manager to inspect `comfy-output` and pull
+session output back locally.
 
 Keep the execution contexts separate:
 
