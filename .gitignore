@@ -36,6 +36,7 @@ modal_serve.log
 .cache/
 .claude/
 .firecrawl/
+.modal-comfyui/
 .roo/
 
 # Claude hook error relay
