@@ -42,6 +42,7 @@ DEFAULT_GPU_CHOICES = [
     "H200",
     "B200",
 ]
+RUN_MODE_CHOICES = ("attached", "detached")
 
 from scripts.modal_run_info import (
     AppLogStreamer,
@@ -169,7 +170,13 @@ def ask_selection() -> UserSelection:
     ).ask()
     seed = int(seed_str) if seed_str else None
 
-    preferred_run_mode = str(preferences.get("last_run_mode") or "attached")
+    preferred_run_mode = str(
+        preferences.get("last_infer_run_mode")
+        or preferences.get("last_run_mode")
+        or "attached"
+    )
+    if preferred_run_mode not in RUN_MODE_CHOICES:
+        preferred_run_mode = "attached"
     run_mode = questionary.select(
         "Run mode:",
         choices=[
@@ -185,7 +192,7 @@ def ask_selection() -> UserSelection:
         {
             "last_infer_gpu": gpu_choice,
             "last_infer_timeout": timeout_minutes,
-            "last_run_mode": run_mode,
+            "last_infer_run_mode": run_mode,
         }
     )
 

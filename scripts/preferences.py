@@ -13,6 +13,7 @@ ALLOWED_KEYS = {
     "last_run_mode",
     "last_deploy_gpu",
     "last_infer_gpu",
+    "last_infer_run_mode",
     "last_infer_timeout",
 }
 
