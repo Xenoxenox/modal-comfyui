@@ -438,6 +438,7 @@ image = (
     .run_commands("comfy --skip-prompt install --nvidia")
     .run_commands("git lfs install")
     .add_local_python_source("config", copy=True)
+    .add_local_python_source("server", copy=True)
     .add_local_file(str(_local_config_path()), CONFIG_PATH, copy=True)
     .add_local_file(
         str(root_dir / "server" / "nginx.conf"),
