@@ -54,22 +54,22 @@ def setup_logger() -> Path:
     sh.setFormatter(formatter)
     logger.addHandler(sh)
 
-    logging.info("日志输出：%s", log_path)
+    logging.info("Log output: %s", log_path)
     return log_path
 
 
 def load_workflow(path: Path) -> dict:
     """Read and validate a ComfyUI API-format workflow JSON file."""
     if not path.exists():
-        raise FileNotFoundError(f"Workflow 文件不存在：{path}")
+        raise FileNotFoundError(f"Workflow file does not exist: {path}")
     if path.suffix.lower() != ".json":
-        raise ValueError(f"Workflow 文件必须为 JSON 格式：{path}")
+        raise ValueError(f"Workflow file must be JSON: {path}")
 
     text = path.read_text(encoding="utf-8")
     data = json.loads(text)
 
     if not isinstance(data, dict):
-        raise ValueError(f"Workflow JSON 顶层必须是 dict，实际类型：{type(data).__name__}")
+        raise ValueError(f"Workflow JSON top level must be a dict, got: {type(data).__name__}")
 
     return data
 
@@ -87,7 +87,7 @@ def download_outputs(result: dict, output_dir: Path) -> list[Path]:
         content = base64.b64decode(content_b64)
         local_path = output_dir / filename
         local_path.write_bytes(content)
-        logging.info("写入文件: %s (%d bytes)", local_path, len(content))
+        logging.info("Wrote file: %s (%d bytes)", local_path, len(content))
         written.append(local_path)
 
     return written

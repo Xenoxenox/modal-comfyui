@@ -115,7 +115,7 @@ def selection_from_args(args: argparse.Namespace, parser: argparse.ArgumentParse
 
     workflow_path = args.workflow.expanduser().resolve()
     if not workflow_path.exists():
-        raise FileNotFoundError(f"路径不存在：{workflow_path}")
+        raise FileNotFoundError(f"Path does not exist: {workflow_path}")
 
     if args.timeout_minutes <= 0:
         raise ValueError("--timeout must be greater than 0")
@@ -134,13 +134,13 @@ def ask_selection() -> UserSelection:
     try:
         import questionary
     except ImportError:
-        print("需要 questionary，请运行 `uv sync` 或 `pip install questionary`。")
+        print("questionary is required. Run `uv sync` or `pip install questionary`.")
         raise
 
     preferences = load_preferences()
     preferred_gpu = str(preferences.get("last_infer_gpu") or "L4")
     gpu_choice = questionary.select(
-        "选择 GPU：",
+        "Select GPU:",
         choices=DEFAULT_GPU_CHOICES,
         default=preferred_gpu,
     ).ask()
@@ -148,33 +148,33 @@ def ask_selection() -> UserSelection:
         raise KeyboardInterrupt
 
     workflow_str = questionary.path(
-        "选择 workflow JSON 文件：",
+        "Select workflow JSON file:",
         default="workflows/",
     ).ask()
     if not workflow_str:
         raise KeyboardInterrupt
     workflow_path = Path(workflow_str).expanduser().resolve()
     if not workflow_path.exists():
-        raise FileNotFoundError(f"路径不存在：{workflow_path}")
+        raise FileNotFoundError(f"Path does not exist: {workflow_path}")
 
     timeout_str = questionary.text(
-        "超时时间（分钟）：",
+        "Timeout (minutes):",
         default=str(preferences.get("last_infer_timeout") or "10"),
     ).ask()
     timeout_minutes = int(timeout_str or "10")
 
     seed_str = questionary.text(
-        "随机种子（留空使用 workflow 默认）：",
+        "Seed override (leave blank to use workflow default):",
         default="",
     ).ask()
     seed = int(seed_str) if seed_str else None
 
     preferred_run_mode = str(preferences.get("last_run_mode") or "attached")
     run_mode = questionary.select(
-        "运行模式：",
+        "Run mode:",
         choices=[
-            questionary.Choice("Attached (等待完成并下载输出)", value="attached"),
-            questionary.Choice("Detached (提交后返回 app/log 信息)", value="detached"),
+            questionary.Choice("Attached (wait for completion and download outputs)", value="attached"),
+            questionary.Choice("Detached (return after submission with app/log info)", value="detached"),
         ],
         default=preferred_run_mode,
     ).ask()
@@ -273,12 +273,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             selection = ask_selection()
 
-        logging.info("加载 workflow: %s", selection.workflow_path)
+        logging.info("Loading workflow: %s", selection.workflow_path)
         workflow_json = load_workflow(selection.workflow_path)
 
         if selection.seed is not None:
             workflow_json = apply_seed(workflow_json, selection.seed)
-            logging.info("已覆盖 seed: %d", selection.seed)
+            logging.info("Seed override applied: %d", selection.seed)
 
         session_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
         output_dir = Path("output") / session_id
@@ -292,25 +292,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             from scripts.tui import ask_confirm
 
             if not ask_confirm("Submit this Modal inference job?", default=False):
-                logging.warning("用户取消提交。")
+                logging.warning("Submission canceled by user.")
                 return 1
         else:
-            logging.info("确认已由 --yes 跳过。")
+            logging.info("Confirmation skipped by --yes.")
 
         try:
             from server.app import app as infer_app, run_headless_inference
         except ModuleNotFoundError as exc:
             if exc.name == "modal":
-                print("需要 modal，请运行 `uv sync` 或 `pip install modal`。")
+                print("modal is required. Run `uv sync` or `pip install modal`.")
             raise
 
         logging.info("Session: %s", session_id)
         logging.info("GPU: %s", selection.gpu_choice)
-        logging.info("超时: %d 分钟", selection.timeout_minutes)
-        logging.info("运行模式: %s", selection.run_mode)
+        logging.info("Timeout: %d minutes", selection.timeout_minutes)
+        logging.info("Run mode: %s", selection.run_mode)
 
-        logging.info("=== 开始远程执行 ===")
-        logging.info("正在提交到 Modal。Modal 可能正在分配 GPU、检查 image 或挂载容器。")
+        logging.info("=== Starting remote execution ===")
+        logging.info("Submitting to Modal. Modal may be allocating GPU, checking the image, or mounting the container.")
 
         remote_generate = run_headless_inference.with_options(
             gpu=selection.gpu_choice,
@@ -335,7 +335,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 log_path=log_path,
             )
             if selection.run_mode == "detached":
-                logging.info("Detached 模式已提交。使用上面的 logs command 查看进度。")
+                logging.info("Detached job submitted. Use the logs command above to view progress.")
                 return 0
             app_log_path = modal_log_path("modal_app_comfyui_infer")
             log_streamer = AppLogStreamer(app_id, function_call_id, app_log_path)
@@ -346,31 +346,31 @@ def main(argv: Sequence[str] | None = None) -> int:
             finally:
                 log_streamer.stop()
 
-        logging.info("=== 远程执行完成 ===")
+        logging.info("=== Remote execution complete ===")
 
         # Download results
         written = download_outputs(result, output_dir)
 
-        logging.info("=== 运行完成 ===")
+        logging.info("=== Run complete ===")
         logging.info("Session: %s", session_id)
-        logging.info("输出路径: %s", output_dir)
+        logging.info("Output path: %s", output_dir)
         if written:
-            logging.info("生成文件：")
+            logging.info("Generated files:")
             for f in written:
                 logging.info("  %s", f.name)
-        logging.info("✅ 请在上方输出路径查看结果。")
+        logging.info("View results in the output path above.")
 
     except KeyboardInterrupt:
-        logging.warning("用户中断。")
+        logging.warning("Interrupted by user.")
         exit_code = 1
     except Exception as exc:
-        logging.exception("运行失败：%s", exc)
-        logging.error("日志见：%s", log_path)
+        logging.exception("Run failed: %s", exc)
+        logging.error("See log: %s", log_path)
         exit_code = 1
 
     if not has_cli_args:
         with contextlib.suppress(EOFError):
-            input("按回车键退出...")
+            input("Press Enter to exit...")
 
     return exit_code
 
