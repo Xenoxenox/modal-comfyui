@@ -7,6 +7,7 @@ Usage:
 from __future__ import annotations
 
 import dataclasses
+import datetime as dt
 import os
 import re
 import subprocess
@@ -35,6 +36,15 @@ from config.schema import (
 )
 from scripts.manage_volumes import volume_management_menu
 from scripts.manage_volumes import list_prepared_model_files, remove_volume_model_files
+from scripts.billing import print_exit_summary
+from scripts.modal_status import (
+    ExpectedModalSecret,
+    ModalStatusSnapshot,
+    fresh_modal_status_snapshot,
+    modal_auth_is_missing,
+    sanitize_modal_error,
+)
+from scripts.preferences import load_preferences, save_preferences
 from scripts.tui import (
     STYLE,
     ask_confirm,
@@ -248,6 +258,27 @@ def _set_modal_secret_config(cfg: Config, env_var: str, secret_name: str) -> Non
     )
 
 
+def _expected_modal_secrets(
+    cfg: Config | None,
+    configured_overrides: dict[str, str] | None = None,
+) -> list[ExpectedModalSecret]:
+    configured_overrides = configured_overrides or {}
+    expected: list[ExpectedModalSecret] = []
+    for spec in MODAL_SECRET_SPECS:
+        secret_name = configured_overrides.get(spec["env_var"])
+        if secret_name is None:
+            secret_name = _effective_secret_name(cfg, spec)
+        expected.append(
+            ExpectedModalSecret(
+                label=spec["label"],
+                name=secret_name,
+                key=spec["key"],
+                env_var=spec["env_var"],
+            )
+        )
+    return expected
+
+
 def _modal_secret_names() -> tuple[set[str], str | None]:
     try:
         import modal
@@ -257,7 +288,7 @@ def _modal_secret_names() -> tuple[set[str], str | None]:
     try:
         return {secret.name for secret in modal.Secret.objects.list() if secret.name}, None
     except Exception as exc:
-        return set(), str(exc)
+        return set(), sanitize_modal_error(str(exc))
 
 
 def _modal_secret_statuses(
@@ -275,9 +306,12 @@ def _modal_secret_statuses(
         if secret_name is None:
             status = "disabled"
             detail = f"disabled via {spec['env_var']}"
+        elif list_error and "Token missing" in list_error:
+            status = "skipped"
+            detail = "blocked by sign-in"
         elif list_error:
             status = "unknown"
-            detail = list_error
+            detail = sanitize_modal_error(list_error)
         elif secret_name in secret_names:
             status = "ok"
             detail = f"{secret_name} ({spec['key']})"
@@ -305,6 +339,8 @@ def _modal_secret_status_rows(statuses: list[ModalSecretStatus]) -> list[tuple[s
             value = f"MISSING: {status.detail}"
         elif status.status == "disabled":
             value = status.detail
+        elif status.status == "skipped":
+            value = f"SKIPPED: {status.detail}"
         else:
             value = f"UNKNOWN: {status.detail}"
         rows.append((status.label, value))
@@ -322,12 +358,80 @@ def _print_modal_secret_status(
     statuses = _modal_secret_statuses(secret_names, list_error, cfg, configured_overrides)
     rows = _modal_secret_status_rows(statuses)
     missing = any(status.status == "missing" for status in statuses)
-    unknown = any(status.status == "unknown" for status in statuses)
+    unknown = any(status.status in {"unknown", "skipped"} for status in statuses)
     print_result_panel(
         "[bold yellow]Modal Secrets[/bold yellow]" if missing or unknown else "[bold green]Modal Secrets[/bold green]",
         rows,
         border_style="yellow" if missing or unknown else "green",
     )
+
+
+def _print_modal_status_snapshot(snapshot: ModalStatusSnapshot) -> None:
+    account_warn = snapshot.account.status != "ok"
+    print_result_panel(
+        "[bold yellow]Modal Account[/bold yellow]" if account_warn else "[bold green]Modal Account[/bold green]",
+        [
+            ("Status", snapshot.account.status.upper()),
+            ("Profile", snapshot.account.profile),
+            ("Detail", snapshot.account.detail),
+        ],
+        border_style="yellow" if account_warn else "green",
+    )
+
+    rows: list[tuple[str, str]] = []
+    for status in snapshot.secrets:
+        if status.status == "ok":
+            value = f"OK: {status.detail}"
+        elif status.status == "missing":
+            value = f"MISSING: {status.detail}"
+        elif status.status == "disabled":
+            value = status.detail
+        elif status.status == "skipped":
+            value = f"SKIPPED: {status.detail}"
+        else:
+            value = f"UNKNOWN: {status.detail}"
+        rows.append((status.label, value))
+    warn = any(status.status in {"missing", "unknown", "skipped"} for status in snapshot.secrets)
+    print_result_panel(
+        "[bold yellow]Modal Secrets[/bold yellow]" if warn else "[bold green]Modal Secrets[/bold green]",
+        rows,
+        border_style="yellow" if warn else "green",
+    )
+
+
+def _fresh_modal_status(cfg: Config, *, known_existing: set[str] | None = None) -> ModalStatusSnapshot:
+    return fresh_modal_status_snapshot(
+        _expected_modal_secrets(cfg),
+        known_existing=known_existing,
+    )
+
+
+def _prompt_modal_setup_if_needed(cfg: Config) -> None:
+    snapshot = _fresh_modal_status(cfg)
+    _print_modal_status_snapshot(snapshot)
+    if not modal_auth_is_missing(snapshot):
+        return
+
+    try:
+        run_setup = ask_confirm("Modal token is missing. Do you want to run 'modal setup' now?", True)
+    except KeyboardInterrupt:
+        return
+    if not run_setup:
+        return
+
+    print_status(
+        "[bold blue]Starting Modal setup. Complete the browser flow, then return here.[/bold blue]",
+        style="blue",
+    )
+    result = subprocess.run([sys.executable, "-m", "modal", "setup"], check=False)
+    if result.returncode == 0:
+        print_status("[bold green]Modal setup finished. Refreshed status is shown below.[/bold green]", style="green")
+    else:
+        print_status(
+            f"[yellow]Modal setup exited with code {result.returncode}. You can retry later or continue in the TUI.[/yellow]",
+            style="yellow",
+        )
+    _print_modal_status_snapshot(_fresh_modal_status(cfg))
 
 
 def _upsert_modal_secret(secret_name: str, key: str, value: str) -> None:
@@ -344,7 +448,13 @@ def _upsert_modal_secret(secret_name: str, key: str, value: str) -> None:
 
 
 def _configure_modal_secrets_menu(cfg: Config) -> None:
-    secret_names, list_error = _modal_secret_names()
+    snapshot = _fresh_modal_status(cfg)
+    if snapshot.account.status == "missing":
+        _print_modal_status_snapshot(snapshot)
+        print_status("Sign in to Modal before creating or updating Modal Secrets.", style="yellow")
+        return
+    secret_names = {status.name for status in snapshot.secrets if status.status == "ok" and status.name}
+    list_error = None if snapshot.account.status != "missing" else "Token missing. Run `modal setup` to sign in."
     choices = []
     for spec in MODAL_SECRET_SPECS:
         secret_name = _effective_secret_name(cfg, spec)
@@ -1156,26 +1266,54 @@ def _modal_env(gpu_choice: str | None = None) -> dict[str, str]:
     return env
 
 
-def _choose_web_gpu(default: str = DEFAULT_WEB_UI_GPU) -> str:
-    return ask_select(
+def _choose_web_gpu(default: str = DEFAULT_WEB_UI_GPU, *, preference_key: str = "last_web_gpu") -> str:
+    preferences = load_preferences()
+    preferred = str(preferences.get(preference_key) or default)
+    choice = ask_select(
         "Web UI GPU:",
-        choices=gpu_choice_items(default),
-        default=default,
+        choices=gpu_choice_items(preferred),
+        default=preferred,
         instruction=(
             "Used by server/ui.py for modal serve/deploy. "
             "Headless inference still asks for GPU per run."
         ),
     )
+    save_preferences({preference_key: choice})
+    return choice
+
+
+def _workflow_dependency_status() -> str:
+    return "present" if (Path(__file__).parent / "workflow_api.json").exists() else "absent"
+
+
+def _confirm_remote_action(
+    title: str,
+    command: list[str],
+    rows: list[tuple[str, object]],
+    *,
+    default_confirm: bool = False,
+) -> bool:
+    review_rows = [
+        *rows,
+        ("Cache Volume", CACHE_VOLUME),
+        ("Output Volume", "comfy-output"),
+        ("workflow_api.json", _workflow_dependency_status()),
+    ]
+    print_result_panel(title, review_rows, border_style="yellow")
+    print_command_panel("[bold yellow]Command Review[/bold yellow]", command, rows, border_style="yellow")
+    return ask_confirm("Start this Modal operation?", default=default_confirm)
 
 
 def _run_prepare_for_preflight(reason: str) -> None:
     cmd = ["modal", "run", "server/app.py::prepare"]
-    print_command_panel(
-        "[bold yellow]Run Prepare[/bold yellow]",
+    if not _confirm_remote_action(
+        "[bold yellow]Prepare Models Pre-flight[/bold yellow]",
         cmd,
-        [("Reason", reason), ("Volume", CACHE_VOLUME)],
-        border_style="yellow",
-    )
+        [("Reason", reason), ("Volume", CACHE_VOLUME), ("Mode", "normal")],
+        default_confirm=True,
+    ):
+        print_status("Prepare skipped by user.", style="yellow")
+        return
     subprocess.run(cmd, env=_modal_env(), check=True)
 
 
@@ -1238,50 +1376,47 @@ def _normal_preflight(cfg: Config) -> None:
 
 def _launch_normal_web_ui(cfg: Config) -> None:
     _normal_preflight(cfg)
-    gpu_choice = _choose_web_gpu(DEFAULT_WEB_UI_GPU)
-    print_result_panel(
-        "[bold blue]Web UI Dev Serve[/bold blue]",
+    gpu_choice = _choose_web_gpu(DEFAULT_WEB_UI_GPU, preference_key="last_web_gpu")
+    cmd = [sys.executable, "serve.py", "--gpu", gpu_choice]
+    if not _confirm_remote_action(
+        "[bold yellow]Web UI Dev Serve Review[/bold yellow]",
+        cmd,
         [
-            ("Command", f"python serve.py --gpu {gpu_choice}"),
             ("Mode", "normal"),
             ("GPU", gpu_choice),
+            ("Config", CONFIG_PATH),
             ("Encoding", "UTF-8 environment enabled"),
         ],
-        border_style="blue",
-    )
-    print_command_panel(
-        "[bold blue]Confirm Command[/bold blue]",
-        [sys.executable, "serve.py", "--gpu", gpu_choice],
-        [("Mode", "normal"), ("GPU", gpu_choice)],
-        border_style="blue",
-    )
+        default_confirm=False,
+    ):
+        print_status("Web UI launch cancelled.", style="yellow")
+        return
     subprocess.run(
-        [sys.executable, "serve.py", "--gpu", gpu_choice],
+        cmd,
         env=_modal_env(),
         check=True,
     )
 
 
 def _launch_empty_web_ui() -> None:
-    gpu_choice = _choose_web_gpu(EMPTY_WEB_UI_GPU)
-    print_result_panel(
-        "[bold blue]Empty Web UI Dev Serve[/bold blue]",
+    gpu_choice = _choose_web_gpu(EMPTY_WEB_UI_GPU, preference_key="last_empty_gpu")
+    cmd = [sys.executable, "serve.py", "--empty", "--gpu", gpu_choice]
+    if not _confirm_remote_action(
+        "[bold yellow]Empty Web UI Dev Serve Review[/bold yellow]",
+        cmd,
         [
-            ("Command", f"python serve.py --empty --gpu {gpu_choice}"),
             ("Mode", "empty"),
             ("GPU", gpu_choice),
+            ("Config profile", "empty"),
+            ("Modal Environment", "empty"),
             ("Prepare", "skipped"),
         ],
-        border_style="blue",
-    )
-    print_command_panel(
-        "[bold blue]Confirm Command[/bold blue]",
-        [sys.executable, "serve.py", "--empty", "--gpu", gpu_choice],
-        [("Mode", "empty"), ("GPU", gpu_choice), ("Prepare", "skipped")],
-        border_style="blue",
-    )
+        default_confirm=False,
+    ):
+        print_status("Empty Web UI launch cancelled.", style="yellow")
+        return
     subprocess.run(
-        [sys.executable, "serve.py", "--empty", "--gpu", gpu_choice],
+        cmd,
         env=_modal_env(),
         check=True,
     )
@@ -1310,8 +1445,10 @@ def _run_comfyui_menu(get_config: Callable[[], Config]) -> None:
     )
 
     if action == "normal":
+        save_preferences({"last_run_mode": "normal"})
         _launch_normal_web_ui(get_config())
     elif action == "empty":
+        save_preferences({"last_run_mode": "empty"})
         _launch_empty_web_ui()
 
 
@@ -1333,23 +1470,22 @@ def _cloud_deployment_menu() -> None:
     )
 
     if action == "deploy":
-        gpu_choice = _choose_web_gpu(DEFAULT_WEB_UI_GPU)
-        print_result_panel(
-            "[bold blue]Web UI Deploy[/bold blue]",
+        gpu_choice = _choose_web_gpu(DEFAULT_WEB_UI_GPU, preference_key="last_deploy_gpu")
+        cmd = [sys.executable, "-m", "scripts.deploy_ui", "--gpu", gpu_choice]
+        if not _confirm_remote_action(
+            "[bold yellow]Web UI Deploy Review[/bold yellow]",
+            cmd,
             [
-                ("Command", f"python -m scripts.deploy_ui --gpu {gpu_choice}"),
                 ("GPU", gpu_choice),
+                ("Mode", "deploy"),
+                ("Config", CONFIG_PATH),
             ],
-            border_style="blue",
-        )
-        print_command_panel(
-            "[bold blue]Confirm Command[/bold blue]",
-            [sys.executable, "-m", "scripts.deploy_ui", "--gpu", gpu_choice],
-            [("GPU", gpu_choice), ("Mode", "deploy")],
-            border_style="blue",
-        )
+            default_confirm=False,
+        ):
+            print_status("Deploy cancelled.", style="yellow")
+            return
         subprocess.run(
-            [sys.executable, "-m", "scripts.deploy_ui", "--gpu", gpu_choice],
+            cmd,
             env=_modal_env(),
             check=True,
         )
@@ -1416,6 +1552,7 @@ def _plugins_menu(cfg: Config) -> None:
 
 
 def main() -> None:
+    session_start = dt.datetime.now().astimezone()
     print_banner(
         "ComfyUI Manager",
         "Configure models/plugins, run ComfyUI, deploy Web UI, and manage Modal volumes.",
@@ -1436,75 +1573,90 @@ def main() -> None:
             print_status(f"{n_models} models - {n_plugins} plugins", style="green")
         return cfg
 
-    _print_modal_secret_status(get_config())
+    _prompt_modal_setup_if_needed(get_config())
 
     while True:
-        choice = ask_select(
-            "What do you want to do?",
-            choices=[
-                questionary.Choice(
-                    "Run ComfyUI",
-                    value="run",
-                    description="Launch normal or empty Web UI modes.",
-                ),
-                questionary.Choice(
-                    "Manage models",
-                    value="models",
-                    description="Add/list/remove model config and upload local model files.",
-                ),
-                questionary.Choice(
-                    "Manage plugins",
-                    value="plugins",
-                    description="Add/list/remove ComfyUI custom node config.",
-                ),
-                questionary.Choice(
-                    "Cloud Deployment",
-                    value="cloud",
-                    description="Deploy persistent Web UI endpoint.",
-                ),
-                questionary.Choice(
-                    "Configure Modal Secrets",
-                    value="secrets",
-                    description="Create or update Hugging Face and CivitAI Modal secrets.",
-                ),
-                questionary.Choice(
-                    "Manage Modal Volumes",
-                    value="volumes",
-                    description="List comfy-cache/comfy-output or clean old output sessions.",
-                ),
-                questionary.Choice("Exit", value="exit"),
-            ],
-        )
+        try:
+            choice = ask_select(
+                "What do you want to do?",
+                choices=[
+                    questionary.Choice(
+                        "Run ComfyUI",
+                        value="run",
+                        description="Launch normal or empty Web UI modes.",
+                    ),
+                    questionary.Choice(
+                        "Manage models",
+                        value="models",
+                        description="Add/list/remove model config and upload local model files.",
+                    ),
+                    questionary.Choice(
+                        "Manage plugins",
+                        value="plugins",
+                        description="Add/list/remove ComfyUI custom node config.",
+                    ),
+                    questionary.Choice(
+                        "Cloud Deployment",
+                        value="cloud",
+                        description="Deploy persistent Web UI endpoint.",
+                    ),
+                    questionary.Choice(
+                        "Configure Modal Secrets",
+                        value="secrets",
+                        description="Create or update Hugging Face and CivitAI Modal secrets.",
+                    ),
+                    questionary.Choice(
+                        "Refresh Modal Status",
+                        value="status",
+                        description="Re-check Modal Account and Modal Secrets in a fresh subprocess.",
+                    ),
+                    questionary.Choice(
+                        "Manage Modal Volumes",
+                        value="volumes",
+                        description="List comfy-cache/comfy-output or clean old output sessions.",
+                    ),
+                    questionary.Choice("Exit", value="exit"),
+                ],
+            )
+        except KeyboardInterrupt:
+            break
 
         if choice == "exit":
             break
-        elif choice == "run":
-            print_step("Main > Run ComfyUI")
-            _run_comfyui_menu(get_config)
-        elif choice == "models":
-            print_step("Main > Models")
-            cfg = get_config()
-            _models_menu(cfg)
-        elif choice == "plugins":
-            print_step("Main > Plugins")
-            cfg = get_config()
-            _plugins_menu(cfg)
-        elif choice == "cloud":
-            print_step("Main > Cloud Deployment")
-            _cloud_deployment_menu()
-        elif choice == "secrets":
-            print_step("Main > Configure Modal Secrets")
-            _configure_modal_secrets_menu(get_config())
-        elif choice == "volumes":
-            print_step("Main > Volumes")
-            cfg = get_config()
-            orphan_cache_paths = {
-                item.cache_path
-                for item in _orphan_prepared_model_files(cfg, include_sizes=False)
-                if item.cache_path
-            }
-            volume_management_menu(orphan_cache_paths=orphan_cache_paths)
+        try:
+            if choice == "run":
+                print_step("Main > Run ComfyUI")
+                _run_comfyui_menu(get_config)
+            elif choice == "models":
+                print_step("Main > Models")
+                cfg = get_config()
+                _models_menu(cfg)
+            elif choice == "plugins":
+                print_step("Main > Plugins")
+                cfg = get_config()
+                _plugins_menu(cfg)
+            elif choice == "cloud":
+                print_step("Main > Cloud Deployment")
+                _cloud_deployment_menu()
+            elif choice == "secrets":
+                print_step("Main > Configure Modal Secrets")
+                _configure_modal_secrets_menu(get_config())
+            elif choice == "status":
+                print_step("Main > Modal Status")
+                _print_modal_status_snapshot(_fresh_modal_status(get_config()))
+            elif choice == "volumes":
+                print_step("Main > Volumes")
+                cfg = get_config()
+                orphan_cache_paths = {
+                    item.cache_path
+                    for item in _orphan_prepared_model_files(cfg, include_sizes=False)
+                    if item.cache_path
+                }
+                volume_management_menu(orphan_cache_paths=orphan_cache_paths)
+        except KeyboardInterrupt:
+            console.print("[dim]Returned to main menu.[/dim]")
 
+    print_exit_summary(session_start, dt.datetime.now().astimezone())
     console.print("\n[bold green]Done.[/bold green]\n")
 
 

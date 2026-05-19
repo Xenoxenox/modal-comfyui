@@ -11,12 +11,18 @@ import os
 import subprocess
 import sys
 import time
-from datetime import datetime
-from pathlib import Path
 from urllib import request as urlrequest
 
 import tqdm
 
+from scripts.modal_run_info import (
+    modal_app_logs_command,
+    modal_app_stop_command,
+    modal_log_path,
+    parse_modal_run_info,
+    shell_command_text,
+)
+from scripts.modal_status import sanitize_modal_error
 from scripts.web_ui_mode import (
     CONFIG_PROFILE_ENV,
     DEFAULT_WEB_UI_GPU,
@@ -76,7 +82,7 @@ def _probe_url(url: str, retries: int = 5, delay: float = 3.0) -> bool:
 
 
 def stop_old_apps(modal_env: str | None = None):
-    list_cmd = ["modal", "app", "list", *modal_env_args(modal_env)]
+    list_cmd = [sys.executable, "-m", "modal", "app", "list", *modal_env_args(modal_env)]
     result = subprocess.run(
         list_cmd,
         capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -88,10 +94,36 @@ def stop_old_apps(modal_env: str | None = None):
             if app_id:
                 print(f"Stopping old app: {app_id}")
                 subprocess.run(
-                    ["modal", "app", "stop", *modal_env_args(modal_env), app_id],
+                    [sys.executable, "-m", "modal", "app", "stop", *modal_env_args(modal_env), app_id],
                     capture_output=True,
                 )
     time.sleep(5)
+
+
+def _print_run_info(info: dict[str, str], log_path: object, proc_pid: int | None = None) -> None:
+    app_id = info.get("app_id")
+    function_call_id = info.get("function_call_id")
+    print("\nModal run details")
+    if app_id:
+        print(f"  App ID: {app_id}")
+    if info.get("dashboard_url"):
+        print(f"  Dashboard: {info['dashboard_url']}")
+    if function_call_id:
+        print(f"  Function Call ID: {function_call_id}")
+    if info.get("function_call_url"):
+        print(f"  Function Call: {info['function_call_url']}")
+    if app_id:
+        print(f"  Logs command: {shell_command_text(modal_app_logs_command(app_id, function_call_id))}")
+        print(
+            "  Stop command: "
+            f"{shell_command_text(modal_app_stop_command(app_id))} "
+            "(only if the app lingers after you are done)"
+        )
+    if info.get("web_url"):
+        print(f"  ComfyUI URL: {info['web_url']}")
+    print(f"  Local app log: {log_path}")
+    if proc_pid is not None:
+        print(f"  Local PID: {proc_pid} (Ctrl+C to stop attached serve)")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -116,19 +148,17 @@ def main():
         CONFIG_PROFILE_ENV: profile,
         **empty_mode_env(profile),
     }
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True)
-    log_path = log_dir / f"modal_serve_{timestamp}.log"
+    log_path = modal_log_path("modal_serve")
 
     env_label = modal_env or "profile default"
     print(
         f"Starting modal serve on GPU {args.gpu} "
         f"profile={profile} env={env_label} -> {log_path}"
     )
+    print("Modal may spend time allocating GPU capacity, checking the image, and mounting containers.")
     with open(log_path, "w", encoding="utf-8") as log:
         proc = subprocess.Popen(
-            ["modal", "serve", *modal_env_args(modal_env), "server/ui.py"],
+            [sys.executable, "-m", "modal", "serve", *modal_env_args(modal_env), "server/ui.py"],
             env=env,
             stdout=log,
             stderr=log,
@@ -137,6 +167,7 @@ def main():
     last_size = 0
     last_change = time.monotonic()
     seen_text = ""
+    printed_run_info = False
 
     with tqdm.tqdm(
         total=MAX_TICKS,
@@ -184,19 +215,28 @@ def main():
                     return
             seen_text = text
 
-            if "modal.run" in text:
-                for line in text.splitlines():
-                    if "modal.run" in line:
-                        url = line.strip()
-                        bar.close()
-                        print(f"\n✓ ComfyUI URL: {url}")
-                        print(f"  Log: {log_path}  PID: {proc.pid}  (Ctrl-C to stop)")
-                        if _probe_url(url):
-                            print("  ✓ Health check passed")
-                        else:
-                            print("  ⚠ Health check failed (service may still be starting)")
-                        proc.wait()
-                        return
+            run_info = parse_modal_run_info(sanitize_modal_error(text))
+            if run_info and not printed_run_info and (
+                "app_id" in run_info or "web_url" in run_info
+            ):
+                if "web_url" in run_info:
+                    bar.close()
+                _print_run_info(run_info, log_path, proc.pid)
+                printed_run_info = True
+                if "web_url" not in run_info:
+                    print("  Waiting for ComfyUI URL...")
+
+            if "web_url" in run_info:
+                url = run_info["web_url"]
+                bar.close()
+                if not printed_run_info:
+                    _print_run_info(run_info, log_path, proc.pid)
+                if _probe_url(url):
+                    print("  Health check passed")
+                else:
+                    print("  Health check failed (service may still be starting)")
+                proc.wait()
+                return
 
     print(f"\nMax display time reached — check {log_path}")
     proc.wait()

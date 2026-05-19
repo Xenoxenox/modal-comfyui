@@ -51,6 +51,16 @@ DEFAULT_GPU_CHOICES = [
     "B200",
 ]
 
+from scripts.modal_run_info import (
+    AppLogStreamer,
+    modal_log_path,
+    modal_app_logs_command,
+    modal_app_stop_command,
+    shell_command_text,
+)
+from scripts.preferences import load_preferences, save_preferences
+from scripts.tui import ask_confirm, print_result_panel
+
 
 @dataclass
 class UserSelection:
@@ -58,13 +68,17 @@ class UserSelection:
     workflow_path: Path
     timeout_minutes: int
     seed: int | None
+    run_mode: str
 
 
 def ask_selection() -> UserSelection:
     """Interactive prompts to configure the inference run."""
+    preferences = load_preferences()
+    preferred_gpu = str(preferences.get("last_infer_gpu") or "L4")
     gpu_choice = questionary.select(
         "选择 GPU：",
         choices=DEFAULT_GPU_CHOICES,
+        default=preferred_gpu,
     ).ask()
     if not gpu_choice:
         raise KeyboardInterrupt
@@ -81,7 +95,7 @@ def ask_selection() -> UserSelection:
 
     timeout_str = questionary.text(
         "超时时间（分钟）：",
-        default="10",
+        default=str(preferences.get("last_infer_timeout") or "10"),
     ).ask()
     timeout_minutes = int(timeout_str or "10")
 
@@ -91,11 +105,32 @@ def ask_selection() -> UserSelection:
     ).ask()
     seed = int(seed_str) if seed_str else None
 
+    preferred_run_mode = str(preferences.get("last_run_mode") or "attached")
+    run_mode = questionary.select(
+        "运行模式：",
+        choices=[
+            questionary.Choice("Attached (等待完成并下载输出)", value="attached"),
+            questionary.Choice("Detached (提交后返回 app/log 信息)", value="detached"),
+        ],
+        default=preferred_run_mode,
+    ).ask()
+    if not run_mode:
+        raise KeyboardInterrupt
+
+    save_preferences(
+        {
+            "last_infer_gpu": gpu_choice,
+            "last_infer_timeout": timeout_minutes,
+            "last_run_mode": run_mode,
+        }
+    )
+
     return UserSelection(
         gpu_choice=gpu_choice,
         workflow_path=workflow_path,
         timeout_minutes=timeout_minutes,
         seed=seed,
+        run_mode=run_mode,
     )
 
 
@@ -110,6 +145,24 @@ def apply_seed(workflow_json: dict, seed: int) -> dict:
             if "seed" in inputs:
                 inputs["seed"] = seed
     return workflow_json
+
+
+def print_inference_review(selection: UserSelection, session_id: str, output_dir: Path) -> None:
+    estimated_gpu_hours = selection.timeout_minutes / 60
+    print_result_panel(
+        "[bold yellow]Headless Inference Review[/bold yellow]",
+        [
+            ("Workflow", selection.workflow_path),
+            ("Session", session_id),
+            ("Output", output_dir),
+            ("GPU", selection.gpu_choice),
+            ("Timeout", f"{selection.timeout_minutes} minutes"),
+            ("Estimated GPU ceiling", f"{estimated_gpu_hours:.2f} GPU-hours before Modal pricing/credits"),
+            ("Run mode", selection.run_mode),
+            ("Seed override", selection.seed),
+        ],
+        border_style="yellow",
+    )
 
 
 def main() -> int:
@@ -127,9 +180,16 @@ def main() -> int:
             logging.info("已覆盖 seed: %d", selection.seed)
 
         session_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
+        output_dir = Path("output") / session_id
+        print_inference_review(selection, session_id, output_dir)
+        if not ask_confirm("Submit this Modal inference job?", default=False):
+            logging.warning("用户取消提交。")
+            return 1
+
         logging.info("Session: %s", session_id)
         logging.info("GPU: %s", selection.gpu_choice)
         logging.info("超时: %d 分钟", selection.timeout_minutes)
+        logging.info("运行模式: %s", selection.run_mode)
 
         # ── Build a per-invocation Modal App ──
         # This pattern (define @app.function inside a function, then
@@ -155,15 +215,44 @@ def main() -> int:
             return run_generate(wf_json, sess_id)
 
         logging.info("=== 开始远程执行 ===")
-        logging.info("正在启动 GPU 容器...")
+        logging.info("正在提交到 Modal。Modal 可能正在分配 GPU、检查 image 或挂载容器。")
 
-        with infer_app.run():
-            result = remote_generate.remote(workflow_json, session_id)
+        with infer_app.run(detach=(selection.run_mode == "detached")):
+            function_call = remote_generate.spawn(workflow_json, session_id)
+            app_id = infer_app.app_id
+            app_dashboard_url = infer_app.get_dashboard_url()
+            function_call_id = function_call.object_id
+            function_call_dashboard_url = function_call.get_dashboard_url()
+            logs_command = shell_command_text(modal_app_logs_command(app_id, function_call_id))
+            stop_command = shell_command_text(modal_app_stop_command(app_id))
+            print_result_panel(
+                "[bold blue]Modal Inference Submitted[/bold blue]",
+                [
+                    ("App ID", app_id),
+                    ("Dashboard", app_dashboard_url),
+                    ("Function Call ID", function_call_id),
+                    ("Function Call", function_call_dashboard_url),
+                    ("Logs Command", logs_command),
+                    ("Stop Command", f"{stop_command} (only if the app lingers after completion)"),
+                    ("Local Log", log_path),
+                ],
+                border_style="blue",
+            )
+            if selection.run_mode == "detached":
+                logging.info("Detached 模式已提交。使用上面的 logs command 查看进度。")
+                return 0
+            app_log_path = modal_log_path("modal_app_comfyui_infer")
+            log_streamer = AppLogStreamer(app_id, function_call_id, app_log_path)
+            logging.info("Streaming Modal logs to %s", app_log_path)
+            log_streamer.start()
+            try:
+                result = function_call.get()
+            finally:
+                log_streamer.stop()
 
         logging.info("=== 远程执行完成 ===")
 
         # Download results
-        output_dir = Path("output") / session_id
         written = download_outputs(result, output_dir)
 
         logging.info("=== 运行完成 ===")

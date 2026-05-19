@@ -37,6 +37,10 @@ Install dependencies and authenticate with Modal:
 uv sync
 modal setup
 ```
+`uv sync` only installs the local Python environment; it does not sign in to
+Modal. If you skip `modal setup`, the TUI detects the missing local Modal token
+and can launch the setup flow for you from the same Python environment.
+
 > [!TIP]
 > If the terminal shows "modal: The term 'modal' is not recognized as a name of a cmdlet..." or a similar prompt, add "uv run" before "modal setup".
 > ```bash
@@ -84,7 +88,27 @@ The TUI is the recommended entry point. Its main menu lets you:
 - inspect and clean Modal Volumes.
 
 The TUI writes `config.toml` for you and shows the exact Modal command before it
-runs prepare, serve, or deploy actions.
+runs prepare, serve, deploy, or headless inference actions. Remote operations
+show a pre-flight review before submission so you can confirm the mode, GPU,
+config profile, Volumes, and command.
+
+At startup, the TUI reports two separate Modal states:
+
+- `Modal Account`: whether the local Modal token/profile is usable.
+- `Modal Secrets`: whether the Modal Secrets needed by this project exist in
+  the active Modal Environment.
+
+If `Modal Account` is missing, `Modal Secrets` checks are skipped as blocked by
+sign-in instead of being reported as unknown. When the TUI detects a missing
+Modal token, it asks:
+
+```text
+Modal token is missing. Do you want to run 'modal setup' now?
+```
+
+Choosing yes runs `python -m modal setup` from the current Python environment.
+After setup finishes, the TUI refreshes account and secret status in a fresh
+Python subprocess, so you do not need to exit and restart the manager.
 
 ## Configure `config.toml`
 
@@ -146,6 +170,12 @@ civitai_secret_name = "civitai-api-key"
 Local environment variables still override `config.toml` when set. Do not put
 token values in `config.toml`.
 
+Modal token IDs, Modal token secrets, Hugging Face tokens, CivitAI API keys, and
+similarly shaped `ak-*` / `as-*` values must never be copied into docs, issues,
+commits, logs, or command panels. TUI status/error paths redact Modal token-shaped
+strings before display, but you should still avoid pasting secrets into prompts
+or files.
+
 If a configured Modal secret does not exist in the active Modal Environment,
 prepare skips mounting that secret and continues. Public Hugging Face models and
 direct public URLs can run without creating these secrets; private or gated
@@ -184,7 +214,8 @@ python manage.py
 Choose `Run ComfyUI`, then `Normal Mode (Full)`. The pre-flight check loads
 `config.toml`, checks the remote model-link manifest, and runs prepare only when
 the manifest is missing, invalid, or missing target paths required by the current
-config.
+config. If prepare is needed, the TUI shows a command review before launching the
+remote Modal operation.
 
 Direct command:
 
@@ -214,6 +245,18 @@ python serve.py --gpu L4
 It sets UTF-8 environment variables, stops old ephemeral Modal apps, writes logs
 to `logs/modal_serve_<timestamp>.log`, waits for the Modal URL, and probes the
 ComfyUI health endpoint.
+
+Modal may spend time allocating GPU capacity, checking the image, building, or
+mounting the container before ComfyUI is reachable. The launcher displays these
+phases immediately and, when Modal exposes them, prints:
+
+- App ID
+- Dashboard URL
+- Function Call ID / URL
+- local app log path
+- a copyable logs command such as
+  `python -m modal app logs <app_id> --follow --function-call <function_call_id>`
+- a stop command to use only if the app lingers after you are done
 
 You can choose another Modal GPU:
 
@@ -325,12 +368,18 @@ The client prompts for:
 - GPU type;
 - workflow JSON path;
 - timeout in minutes;
-- optional seed override for `KSampler` and `KSamplerAdvanced` nodes.
+- optional seed override for `KSampler` and `KSamplerAdvanced` nodes;
+- attached or detached launch mode.
 
 The local `client/` code defines a per-invocation Modal app so the GPU can be
 chosen at runtime. The remote `server/` code starts ComfyUI in the Modal
 container, executes the workflow, writes results under `/output/<session-id>`,
 and returns files for the client to download into `output/<session-id>/`.
+
+Attached mode waits for completion and downloads outputs. Detached mode returns
+after submission with the App ID, dashboard links, Function Call ID, local log,
+logs command, and stop command. The stop command is only a manual fallback if the
+app lingers; completed jobs are not automatically stopped by the client.
 
 Keep the execution contexts separate:
 
