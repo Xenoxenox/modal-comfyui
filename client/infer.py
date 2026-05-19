@@ -2,17 +2,21 @@
 
 Usage:
     python -m client.infer
+    python -m client.infer --workflow workflows/example.json --gpu T4 --yes
 
 Interactive prompts (via questionary) let you choose the GPU, workflow
-file, and timeout. The workflow is then dispatched to a Modal container
-running ComfyUI headlessly; results are downloaded to a local directory.
+file, and timeout when no command-line options are provided. The workflow
+is then dispatched to a Modal container running ComfyUI headlessly; results
+are downloaded to a local directory.
 """
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import logging
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -26,18 +30,6 @@ from client.utils import (
 )
 
 ensure_utf8_stdio()
-
-try:
-    import questionary
-except ImportError:
-    print("需要 questionary，请运行 `uv sync` 或 `pip install questionary`。")
-    raise
-
-try:
-    import modal
-except ImportError:
-    print("需要 modal，请运行 `uv sync` 或 `pip install modal`。")
-    raise
 
 DEFAULT_GPU_CHOICES = [
     "T4",
@@ -59,7 +51,6 @@ from scripts.modal_run_info import (
     shell_command_text,
 )
 from scripts.preferences import load_preferences, save_preferences
-from scripts.tui import ask_confirm, print_result_panel
 
 
 @dataclass
@@ -71,8 +62,81 @@ class UserSelection:
     run_mode: str
 
 
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run a ComfyUI API workflow headlessly on Modal.",
+    )
+    parser.add_argument(
+        "--workflow",
+        type=Path,
+        help="Path to a ComfyUI API-format workflow JSON file.",
+    )
+    parser.add_argument(
+        "--gpu",
+        choices=DEFAULT_GPU_CHOICES,
+        default="L4",
+        help="Modal GPU type to request. Default: L4.",
+    )
+    parser.add_argument(
+        "--timeout",
+        "--timeout-minutes",
+        dest="timeout_minutes",
+        type=int,
+        default=10,
+        help="Maximum remote runtime in minutes. Default: 10.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        help="Override KSampler and KSamplerAdvanced seed values.",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("attached", "detached"),
+        default="attached",
+        help="Attached waits for results; detached returns after submission. Default: attached.",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Submit without the interactive confirmation prompt.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate inputs and print the submission review without contacting Modal.",
+    )
+    return parser
+
+
+def selection_from_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> UserSelection:
+    if args.workflow is None:
+        parser.error("--workflow is required when using command-line options")
+
+    workflow_path = args.workflow.expanduser().resolve()
+    if not workflow_path.exists():
+        raise FileNotFoundError(f"路径不存在：{workflow_path}")
+
+    if args.timeout_minutes <= 0:
+        raise ValueError("--timeout must be greater than 0")
+
+    return UserSelection(
+        gpu_choice=args.gpu,
+        workflow_path=workflow_path,
+        timeout_minutes=args.timeout_minutes,
+        seed=args.seed,
+        run_mode=args.mode,
+    )
+
+
 def ask_selection() -> UserSelection:
     """Interactive prompts to configure the inference run."""
+    try:
+        import questionary
+    except ImportError:
+        print("需要 questionary，请运行 `uv sync` 或 `pip install questionary`。")
+        raise
+
     preferences = load_preferences()
     preferred_gpu = str(preferences.get("last_infer_gpu") or "L4")
     gpu_choice = questionary.select(
@@ -148,6 +212,8 @@ def apply_seed(workflow_json: dict, seed: int) -> dict:
 
 
 def print_inference_review(selection: UserSelection, session_id: str, output_dir: Path) -> None:
+    from scripts.tui import print_result_panel
+
     estimated_gpu_hours = selection.timeout_minutes / 60
     print_result_panel(
         "[bold yellow]Headless Inference Review[/bold yellow]",
@@ -165,12 +231,47 @@ def print_inference_review(selection: UserSelection, session_id: str, output_dir
     )
 
 
-def main() -> int:
+def print_submission_info(
+    *,
+    app_id: str,
+    app_dashboard_url: str,
+    function_call_id: str,
+    function_call_dashboard_url: str,
+    logs_command: str,
+    stop_command: str,
+    log_path: Path,
+) -> None:
+    from scripts.tui import print_result_panel
+
+    print_result_panel(
+        "[bold blue]Modal Inference Submitted[/bold blue]",
+        [
+            ("App ID", app_id),
+            ("Dashboard", app_dashboard_url),
+            ("Function Call ID", function_call_id),
+            ("Function Call", function_call_dashboard_url),
+            ("Logs Command", logs_command),
+            ("Stop Command", f"{stop_command} (only if the app lingers after completion)"),
+            ("Local Log", log_path),
+        ],
+        border_style="blue",
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    has_cli_args = bool(argv)
+
     log_path = setup_logger()
     exit_code = 0
 
     try:
-        selection = ask_selection()
+        if has_cli_args:
+            selection = selection_from_args(args, parser)
+        else:
+            selection = ask_selection()
 
         logging.info("加载 workflow: %s", selection.workflow_path)
         workflow_json = load_workflow(selection.workflow_path)
@@ -182,42 +283,41 @@ def main() -> int:
         session_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:6]}"
         output_dir = Path("output") / session_id
         print_inference_review(selection, session_id, output_dir)
-        if not ask_confirm("Submit this Modal inference job?", default=False):
-            logging.warning("用户取消提交。")
-            return 1
+
+        if args.dry_run:
+            logging.info("Dry run complete; no Modal job submitted.")
+            return 0
+
+        if not args.yes:
+            from scripts.tui import ask_confirm
+
+            if not ask_confirm("Submit this Modal inference job?", default=False):
+                logging.warning("用户取消提交。")
+                return 1
+        else:
+            logging.info("确认已由 --yes 跳过。")
+
+        try:
+            from server.app import app as infer_app, run_headless_inference
+        except ModuleNotFoundError as exc:
+            if exc.name == "modal":
+                print("需要 modal，请运行 `uv sync` 或 `pip install modal`。")
+            raise
 
         logging.info("Session: %s", session_id)
         logging.info("GPU: %s", selection.gpu_choice)
         logging.info("超时: %d 分钟", selection.timeout_minutes)
         logging.info("运行模式: %s", selection.run_mode)
 
-        # ── Build a per-invocation Modal App ──
-        # This pattern (define @app.function inside a function, then
-        # call with app.run()) allows the GPU type to be chosen at
-        # runtime. Proven in modal_infer.py.bak L428-448.
-
-        from server.app import image, cache_vol, output_vol, CACHE_MOUNT, OUTPUT_MOUNT
-
-        infer_app = modal.App("comfyui-infer")
-
-        @infer_app.function(
-            image=image,
-            gpu=selection.gpu_choice,
-            timeout=selection.timeout_minutes * 60,
-            volumes={
-                CACHE_MOUNT: cache_vol,
-                OUTPUT_MOUNT: output_vol,
-            },
-            serialized=True,
-        )
-        def remote_generate(wf_json: dict, sess_id: str) -> dict:
-            from server.generate import run_generate
-            return run_generate(wf_json, sess_id)
-
         logging.info("=== 开始远程执行 ===")
         logging.info("正在提交到 Modal。Modal 可能正在分配 GPU、检查 image 或挂载容器。")
 
-        with infer_app.run(detach=(selection.run_mode == "detached")):
+        remote_generate = run_headless_inference.with_options(
+            gpu=selection.gpu_choice,
+            timeout=selection.timeout_minutes * 60,
+        )
+
+        with infer_app.run(name="comfyui-infer", detach=(selection.run_mode == "detached")):
             function_call = remote_generate.spawn(workflow_json, session_id)
             app_id = infer_app.app_id
             app_dashboard_url = infer_app.get_dashboard_url()
@@ -225,18 +325,14 @@ def main() -> int:
             function_call_dashboard_url = function_call.get_dashboard_url()
             logs_command = shell_command_text(modal_app_logs_command(app_id, function_call_id))
             stop_command = shell_command_text(modal_app_stop_command(app_id))
-            print_result_panel(
-                "[bold blue]Modal Inference Submitted[/bold blue]",
-                [
-                    ("App ID", app_id),
-                    ("Dashboard", app_dashboard_url),
-                    ("Function Call ID", function_call_id),
-                    ("Function Call", function_call_dashboard_url),
-                    ("Logs Command", logs_command),
-                    ("Stop Command", f"{stop_command} (only if the app lingers after completion)"),
-                    ("Local Log", log_path),
-                ],
-                border_style="blue",
+            print_submission_info(
+                app_id=app_id,
+                app_dashboard_url=app_dashboard_url,
+                function_call_id=function_call_id,
+                function_call_dashboard_url=function_call_dashboard_url,
+                logs_command=logs_command,
+                stop_command=stop_command,
+                log_path=log_path,
             )
             if selection.run_mode == "detached":
                 logging.info("Detached 模式已提交。使用上面的 logs command 查看进度。")
@@ -272,8 +368,9 @@ def main() -> int:
         logging.error("日志见：%s", log_path)
         exit_code = 1
 
-    with contextlib.suppress(EOFError):
-        input("按回车键退出...")
+    if not has_cli_args:
+        with contextlib.suppress(EOFError):
+            input("按回车键退出...")
 
     return exit_code
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -16,14 +17,28 @@ def shell_command_text(command: list[str]) -> str:
     return " ".join(command)
 
 
+def _modal_python_command() -> list[str]:
+    return [sys.executable, "-X", "utf8", "-m", "modal"]
+
+
+def _modal_subprocess_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
 def modal_app_logs_command(app_id: str, function_call_id: str | None = None) -> list[str]:
-    cmd = [sys.executable, "-m", "modal", "app", "logs"]
+    cmd = [*_modal_python_command(), "app", "logs"]
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "modal", "app", "logs", "-h"],
+            [*_modal_python_command(), "app", "logs", "-h"],
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=_modal_subprocess_env(),
             timeout=5,
         )
         help_text = f"{result.stdout}\n{result.stderr}"
@@ -39,7 +54,7 @@ def modal_app_logs_command(app_id: str, function_call_id: str | None = None) -> 
 
 
 def modal_app_stop_command(app_id: str) -> list[str]:
-    return [sys.executable, "-m", "modal", "app", "stop", app_id]
+    return [*_modal_python_command(), "app", "stop", app_id]
 
 
 def parse_modal_run_info(text: str) -> dict[str, str]:
@@ -108,6 +123,7 @@ class AppLogStreamer:
                     text=True,
                     encoding="utf-8",
                     errors="replace",
+                    env=_modal_subprocess_env(),
                     bufsize=1,
                 )
             except (OSError, subprocess.SubprocessError) as exc:

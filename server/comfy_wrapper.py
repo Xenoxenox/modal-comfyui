@@ -73,8 +73,14 @@ class ComfyExecutor:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with request.urlopen(req) as resp:
-            result = json.loads(resp.read())
+        try:
+            with request.urlopen(req) as resp:
+                result = json.loads(resp.read())
+        except urlerror.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"ComfyUI /prompt failed with HTTP {exc.code} {exc.reason}: {body}"
+            ) from exc
         prompt_id = result["prompt_id"]
         print(f"[comfy_wrapper] Submitted workflow, prompt_id={prompt_id}")
         return prompt_id

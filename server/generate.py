@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 
+from server.app import cache_vol, sync_prepared_model_links
 from server.comfy_wrapper import ComfyExecutor
 
 OUTPUT_MOUNT = "/output"
@@ -24,6 +25,9 @@ def run_generate(workflow_json: dict, session_id: str) -> dict:
     """
     executor = ComfyExecutor()
     try:
+        cache_vol.reload()
+        sync_prepared_model_links()
+
         executor.start_server()
         executor.wait_until_ready()
 

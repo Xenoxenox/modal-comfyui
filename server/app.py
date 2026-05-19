@@ -498,3 +498,16 @@ def prepare_models(dry_run: bool = False, force: bool = False) -> dict[str, Any]
 def prepare(dry_run: bool = False, force: bool = False) -> None:
     result = prepare_models.remote(dry_run=dry_run, force=force)
     print(json.dumps(result, indent=2))
+
+
+@app.function(
+    volumes={
+        CACHE_MOUNT: cache_vol,
+        OUTPUT_MOUNT: output_vol,
+    },
+    timeout=10 * 60,
+)
+def run_headless_inference(workflow_json: dict, session_id: str) -> dict[str, Any]:
+    from server.generate import run_generate
+
+    return run_generate(workflow_json, session_id)
