@@ -28,20 +28,10 @@ from client.utils import (
     load_workflow,
     setup_logger,
 )
+from scripts.gpu_choices import GPU_CHOICES
 
 ensure_utf8_stdio()
-
-DEFAULT_GPU_CHOICES = [
-    "T4",
-    "L4",
-    "L40S",
-    "A10G",
-    "A100-40GB",
-    "A100-80GB",
-    "H100",
-    "H200",
-    "B200",
-]
+GPU_VALUES = tuple(gpu for gpu, _description in GPU_CHOICES)
 RUN_MODE_CHOICES = ("attached", "detached")
 
 from scripts.modal_run_info import (
@@ -74,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--gpu",
-        choices=DEFAULT_GPU_CHOICES,
+        choices=GPU_VALUES,
         default="L4",
         help="Modal GPU type to request. Default: L4.",
     )
@@ -142,7 +132,10 @@ def ask_selection() -> UserSelection:
     preferred_gpu = str(preferences.get("last_infer_gpu") or "L4")
     gpu_choice = questionary.select(
         "Select GPU:",
-        choices=DEFAULT_GPU_CHOICES,
+        choices=[
+            questionary.Choice(gpu, value=gpu, description=description)
+            for gpu, description in GPU_CHOICES
+        ],
         default=preferred_gpu,
     ).ask()
     if not gpu_choice:
@@ -235,6 +228,35 @@ def print_inference_review(selection: UserSelection, session_id: str, output_dir
             ("Seed override", selection.seed),
         ],
         border_style="yellow",
+    )
+
+
+def _format_written_files(files: list[Path], *, max_items: int = 8) -> str | None:
+    if not files:
+        return None
+    names = [file.name for file in files]
+    if len(names) <= max_items:
+        return ", ".join(names)
+    head = ", ".join(names[:max_items])
+    return f"{head}, ... (+{len(names) - max_items} more)"
+
+
+def print_run_complete_review(session_id: str, output_dir: Path, files: list[Path]) -> None:
+    from scripts.tui import print_result_panel
+
+    print_result_panel(
+        "[bold green]Run Complete[/bold green]",
+        [
+            ("Session ID", session_id),
+            ("Local output", output_dir),
+            ("Files", len(files) or None),
+            ("Generated", _format_written_files(files)),
+            (
+                "Tip",
+                "Run `python manage.py` for volume cleanup and output inspection.",
+            ),
+        ],
+        border_style="green",
     )
 
 
@@ -366,6 +388,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             for f in written:
                 logging.info("  %s", f.name)
         logging.info("View results in the output path above.")
+        print_run_complete_review(session_id, output_dir, written)
 
     except KeyboardInterrupt:
         logging.warning("Interrupted by user.")

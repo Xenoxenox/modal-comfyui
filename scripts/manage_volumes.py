@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -41,11 +42,13 @@ from scripts.tui import (
     print_result_panel,
     print_status,
 )
+from scripts.output_download import download_volume_session
 
 CACHE_VOLUME = "comfy-cache"
 OUTPUT_VOLUME = "comfy-output"
 KNOWN_VOLUMES = (CACHE_VOLUME, OUTPUT_VOLUME)
 MODEL_LINK_MANIFEST = "/.modal-comfyui-model-links.json"
+SESSION_ID_RE = re.compile(r"^\d{8}-\d{6}-[0-9a-fA-F]{6,}$")
 FREE_TIER_REFERENCE_BYTES = 1024**4
 USAGE_CACHE_PATH = Path(".cache") / "modal-comfyui" / "volume_usage.json"
 MODEL_SIZE_CACHE_PATH = Path(".cache") / "modal-comfyui" / "model_file_sizes.json"
@@ -636,6 +639,59 @@ def clean_output_sessions() -> None:
     )
 
 
+def _output_session_dirs(vol: Any) -> list[str]:
+    entries = []
+    for entry in vol.listdir("/"):
+        path = str(entry.path).strip("/")
+        if _entry_type(entry) == "dir" and SESSION_ID_RE.match(path):
+            entries.append(path)
+    return sorted(entries, reverse=True)
+
+
+def download_output_session() -> None:
+    """Interactively download one session from comfy-output to local output/."""
+    vol = modal.Volume.from_name(OUTPUT_VOLUME)
+    try:
+        sessions = _output_session_dirs(vol)
+    except Exception as exc:
+        print_status(f"Read failed: {exc}", style="red")
+        return
+
+    if not sessions:
+        print_status("comfy-output has no session directories to download.", style="yellow")
+        return
+
+    session_id = ask_select(
+        "Download comfy-output session:",
+        choices=[
+            questionary.Choice(session, value=session, description=f"Download to output/{session}")
+            for session in sessions
+        ],
+    )
+    if not session_id:
+        print_status("No session selected.", style="yellow")
+        return
+
+    try:
+        with console.status(f"[bold blue]Downloading {session_id} from {OUTPUT_VOLUME}...[/]", spinner="dots"):
+            result = download_volume_session(vol, str(session_id))
+    except Exception as exc:
+        print_status(f"Download failed: {exc}", style="red")
+        return
+
+    print_result_panel(
+        "[bold green]Download Complete[/bold green]",
+        [
+            ("Volume", OUTPUT_VOLUME),
+            ("Session", result.session_id),
+            ("Local output", result.output_dir),
+            ("Files", result.file_count),
+            ("Bytes", _format_size(result.total_bytes)),
+        ],
+        border_style="green",
+    )
+
+
 def _model_delete_label(model: PreparedModelFile, orphan_cache_paths: set[str]) -> str:
     size = _format_size(model.size)
     cache_label = _compact_cache_path(model.cache_path)
@@ -775,6 +831,11 @@ def volume_management_menu(orphan_cache_paths: set[str] | None = None) -> None:
                 description="Run recursive usage scan and cache the result.",
             ),
             questionary.Choice(
+                "Download Session Output",
+                value=("download-session", OUTPUT_VOLUME),
+                description="Download one comfy-output session into local output/.",
+            ),
+            questionary.Choice(
                 "Delete remote model files",
                 value=("delete-models", CACHE_VOLUME),
                 description="Delete selected prepared model files from comfy-cache.",
@@ -808,6 +869,8 @@ def volume_management_menu(orphan_cache_paths: set[str] | None = None) -> None:
             print_volume_contents(volume_name)
         elif kind == "refresh":
             print_volume_contents(volume_name, refresh_usage=True)
+        elif kind == "download-session":
+            download_output_session()
         elif kind == "delete-models":
             delete_remote_model_files(orphan_cache_paths=orphan_cache_paths)
         elif kind == "prune-orphans":

@@ -188,6 +188,37 @@ def nearby_directory_hint(text: str, *, limit: int = 5) -> str:
     return " Available folders: " + ", ".join(directories)
 
 
+def _project_path_candidates() -> list[str]:
+    roots = [
+        Path.cwd(),
+        Path.cwd() / "workflows",
+        Path.cwd() / "local-models",
+    ]
+    candidates: list[str] = []
+    for root in roots:
+        if not root.exists():
+            continue
+        candidates.append(str(root))
+        try:
+            candidates.extend(str(path) for path in root.iterdir())
+        except OSError:
+            continue
+    return sorted(dict.fromkeys(candidates))
+
+
+def _nearest_project_path(raw_path: str) -> Path | None:
+    needle = Path(raw_path.strip().strip("\"'")).name.lower()
+    if not needle:
+        return None
+    matches = [
+        Path(candidate)
+        for candidate in _project_path_candidates()
+        if _fuzzy_match(needle, Path(candidate).name.lower())
+    ]
+    files = [path for path in matches if path.is_file()]
+    return (files or matches or [None])[0]
+
+
 def _upload_to_cache(local_path: Path, cache_filename: str) -> bool:
     try:
         import modal
@@ -777,6 +808,8 @@ def _add_external_model(cfg: Config) -> None:
 def _add_local_model(cfg: Config) -> None:
     raw_path = questionary.path(
         "Local model file:",
+        get_paths=_project_path_candidates,
+        instruction=nearby_directory_hint(""),
         style=STYLE,
     ).ask()
     if not raw_path:
@@ -787,7 +820,23 @@ def _add_local_model(cfg: Config) -> None:
 
     local_path = _parse_local_path(raw_path)
     if not local_path.exists() or not local_path.is_file():
-        print(f"  {R}File not found:{RST} {local_path}")
+        suggestion = _nearest_project_path(raw_path)
+        if suggestion and suggestion.exists() and suggestion.is_file():
+            if ask_confirm(
+                f"File not found. Did you mean {suggestion}?",
+                default=True,
+            ):
+                local_path = suggestion
+            else:
+                return
+        else:
+            print(f"  {R}File not found:{RST} {local_path}")
+            hint = nearby_directory_hint(raw_path)
+            if hint:
+                console.print(f"  [dim]{hint}[/]")
+            return
+    if not local_path.is_file():
+        print(f"  {R}Not a file:{RST} {local_path}")
         hint = nearby_directory_hint(raw_path)
         if hint:
             console.print(f"  [dim]{hint}[/]")
