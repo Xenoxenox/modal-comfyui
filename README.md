@@ -27,19 +27,37 @@ https://modal.com/pricing
 
 - A Modal account.
 - Python 3.13+ locally. The Modal image uses Python 3.11 intentionally.
-- `uv` installed locally.
 - A terminal that can run interactive prompts.
 - Optional: Modal secrets for private Hugging Face or CivitAI downloads.
 
-Install dependencies and authenticate with Modal:
+Install dependencies with the zero-dependency setup script:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup.ps1
+```
+
+On WSL, Linux, or macOS:
+
+```bash
+bash ./setup.sh
+```
+
+The script detects your operating system, installs `uv` if needed, checks
+network access with `ping google.com`, uses the Tsinghua PyPI mirror when that
+check times out, and lets `uv sync` create or update `.venv`.
+
+If you prefer the manual path:
 
 ```bash
 uv sync
-modal setup
+uv run modal setup
 ```
+
 `uv sync` only installs the local Python environment; it does not sign in to
 Modal. If you skip `modal setup`, the TUI detects the missing local Modal token
 and can launch the setup flow for you from the same Python environment.
+The setup scripts do not run Modal login automatically, create private
+`config.toml`, or write token values.
 
 > [!TIP]
 > If the terminal shows "modal: The term 'modal' is not recognized as a name of a cmdlet..." or a similar prompt, add "uv run" before "modal setup".
@@ -423,8 +441,10 @@ requests do not need any manual user workaround for the historical 405 issue.
 ## Command reference
 
 ```bash
+powershell -ExecutionPolicy Bypass -File .\setup.ps1
+bash ./setup.sh
 uv sync
-modal setup
+uv run modal setup
 python manage.py
 modal run server/app.py::prepare
 python serve.py --gpu L4

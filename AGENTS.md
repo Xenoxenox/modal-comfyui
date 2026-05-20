@@ -28,8 +28,9 @@ This file provides guidance to agents when working with code in this repository.
 - Because headless inference uses `serialized=True` against a Python 3.11 Modal image, the local Python used for headless smoke tests must be compatible with Python 3.11; local project development still targets Python `>=3.13`.
 
 ## Commands actually used by this project
-- Install deps: `uv sync`
-- Modal auth bootstrap: `modal setup`
+- Install deps: `powershell -ExecutionPolicy Bypass -File .\setup.ps1` on Windows, or `bash ./setup.sh` on WSL/Linux/macOS.
+- Manual dependency install: `uv sync`
+- Modal auth bootstrap: `uv run modal setup`
 - Interactive manager: `python manage.py`
 - Dev serve (Web UI): `python serve.py --gpu L4`
 - Empty dev serve (workflow cleanup): `python serve.py --empty --gpu T4`
@@ -38,6 +39,7 @@ This file provides guidance to agents when working with code in this repository.
 - Headless inference: `python -m client.infer`
 - Volume management: `python -m scripts.manage_volumes`
 - Prepare dry-run: set `PYTHONUTF8=1` and `PYTHONIOENCODING=utf-8`, then run `python -m modal run server/app.py::prepare --dry-run` on Windows to avoid GBK failures on Modal CLI glyphs.
+- Setup scripts install `uv` when missing, use the Tsinghua PyPI mirror when `ping google.com` times out, and do not run Modal auth, create private `config.toml`, or write token values.
 
 ## Test/lint reality (important)
 - No test framework, test directory, or lint/format tool config is present in this repository.
