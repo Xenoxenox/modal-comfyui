@@ -9,6 +9,13 @@ from typing import Any
 import modal
 from modal.exception import NotFoundError
 
+from server.model_manifest import (
+    _link_cached_path,
+    _manifest_item,
+    sync_prepared_model_links as _sync_model_links,
+    write_model_link_manifest,
+)
+
 # ── Volumes ──
 cache_vol = modal.Volume.from_name("comfy-cache", create_if_missing=True)
 output_vol = modal.Volume.from_name("comfy-output", create_if_missing=True)
@@ -148,55 +155,8 @@ def _target_name(filename: str, save_as: str | None = None) -> str:
     return save_as if save_as else Path(filename).name
 
 
-def _link_cached_path(source_path: Path, target_path: Path) -> str:
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    if target_path.exists() or target_path.is_symlink():
-        target_path.unlink()
-    target_path.symlink_to(source_path)
-    return str(target_path)
-
-
-def _manifest_item(source_path: Path, target_path: Path, source: str) -> dict[str, str]:
-    return {
-        "source": source,
-        "cache_path": str(source_path),
-        "target_path": str(target_path),
-    }
-
-
-def _write_model_link_manifest(items: list[dict[str, str]]) -> None:
-    MODEL_LINK_MANIFEST.write_text(json.dumps(items, indent=2), encoding="utf-8")
-
-
 def sync_prepared_model_links() -> dict[str, Any]:
-    if not MODEL_LINK_MANIFEST.exists():
-        print(
-            "SKIP model link sync: no prepared model manifest found. "
-            "Run `modal run server/app.py::prepare` first if models are missing.",
-            flush=True,
-        )
-        return {"status": "missing_manifest", "linked": 0, "missing": []}
-
-    try:
-        items = json.loads(MODEL_LINK_MANIFEST.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        print(f"SKIP model link sync: invalid manifest: {exc}", flush=True)
-        return {"status": "invalid_manifest", "linked": 0, "missing": []}
-
-    missing: list[dict[str, str]] = []
-    linked = 0
-    for item in items:
-        source_path = Path(item["cache_path"])
-        target_path = Path(item["target_path"])
-        if not source_path.exists():
-            missing.append(item)
-            print(f"SKIP model link missing cache path: {source_path}", flush=True)
-            continue
-        _link_cached_path(source_path, target_path)
-        linked += 1
-
-    print(f"DONE model link sync: linked={linked} missing={len(missing)}", flush=True)
-    return {"status": "ok", "linked": linked, "missing": missing}
+    return _sync_model_links(MODEL_LINK_MANIFEST)
 
 
 def hf_download(
@@ -399,7 +359,7 @@ def prepare_model_links(dry_run: bool = False, force: bool = False) -> dict[str,
             )
         )
 
-    _write_model_link_manifest(links)
+    write_model_link_manifest(MODEL_LINK_MANIFEST, links)
     summary["links"] = links
     summary["linked"] = len(links)
     print(f"DONE prepare_models linked={len(links)} manifest={MODEL_LINK_MANIFEST}", flush=True)
