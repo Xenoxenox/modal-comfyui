@@ -25,6 +25,12 @@ except ImportError:
     print("questionary is required. Run: uv sync")
     raise
 
+from config.intake import (
+    build_external_spec,
+    build_huggingface_spec,
+    build_local_spec,
+    build_snapshot_spec,
+)
 from config.loader import load_config, save_config, ConfigError
 from config.schema import (
     Config,
@@ -753,14 +759,19 @@ def _add_hf_model(cfg: Config) -> None:
             print(f"  {R}Key '{key}' already exists, skipping.{RST}")
             continue
 
-        cfg.models[key] = ModelSpec(
-            source=ModelSource.HUGGINGFACE,
-            repo_id=repo_id,
-            filename=filename,
-            model_dir=model_dir,
-            save_as=save_as,
-            bundle=bundle,
-        )
+        try:
+            spec = build_huggingface_spec(
+                repo_id,
+                filename,
+                model_dir,
+                save_as=save_as,
+                bundle=bundle,
+            )
+        except ConfigError as e:
+            print(f"  {R}Invalid model: {e}{RST}")
+            return
+
+        cfg.models[key] = spec
         display_name = save_as or original_name
         print(f"  {G}+{RST} {W}{key}{RST}: {D}{repo_id} → {model_dir}/{display_name}{RST}")
 
@@ -795,13 +806,18 @@ def _add_external_model(cfg: Config) -> None:
         print(f"  {R}Key '{key}' conflict or empty, skipping.{RST}")
         return
 
-    cfg.models[key] = ModelSpec(
-        source=ModelSource.EXTERNAL,
-        url=url,
-        filename=filename,
-        model_dir=model_dir,
-        bundle=bundle,
-    )
+    try:
+        spec = build_external_spec(
+            url,
+            filename,
+            model_dir,
+            bundle=bundle,
+        )
+    except ConfigError as e:
+        print(f"  {R}Invalid model: {e}{RST}")
+        return
+
+    cfg.models[key] = spec
     print(f"  {G}+{RST} {W}{key}{RST}: {D}{url} → {model_dir}/{filename}{RST}")
 
 
@@ -898,13 +914,18 @@ def _add_local_model(cfg: Config) -> None:
     if not _upload_to_cache(local_path, cache_filename):
         return
 
-    cfg.models[key] = ModelSpec(
-        source=ModelSource.LOCAL,
-        filename=cache_filename,
-        model_dir=model_dir,
-        save_as=save_as,
-        bundle=bundle,
-    )
+    try:
+        spec = build_local_spec(
+            cache_filename,
+            model_dir,
+            save_as=save_as,
+            bundle=bundle,
+        )
+    except ConfigError as e:
+        print(f"  {R}Invalid model: {e}{RST}")
+        return
+
+    cfg.models[key] = spec
     print(
         f"  {G}+{RST} {W}{key}{RST}: "
         f"{D}{CACHE_VOLUME}/{cache_filename} → {model_dir}/{display_name}{RST}"
@@ -932,11 +953,13 @@ def _add_snapshot_model(cfg: Config) -> None:
         print(f"  {R}Key '{key}' conflict or empty, skipping.{RST}")
         return
 
-    cfg.models[key] = ModelSpec(
-        source=ModelSource.HUGGINGFACE_SNAPSHOT,
-        repo_id=repo_id,
-        target_dir=target_dir,
-    )
+    try:
+        spec = build_snapshot_spec(repo_id, target_dir)
+    except ConfigError as e:
+        print(f"  {R}Invalid model: {e}{RST}")
+        return
+
+    cfg.models[key] = spec
     print(f"  {G}+{RST} {W}{key}{RST}: {D}snapshot {repo_id} → {target_dir}{RST}")
 
 

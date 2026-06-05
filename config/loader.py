@@ -25,7 +25,7 @@ class ConfigError(Exception):
     pass
 
 
-def _validate_model(key: str, spec: ModelSpec) -> None:
+def validate_model(key: str, spec: ModelSpec) -> None:
     if spec.source == ModelSource.HUGGINGFACE:
         missing = []
         if not spec.repo_id:
@@ -110,7 +110,7 @@ def _parse_model(key: str, data: dict) -> ModelSpec:
         url=data.get("url"),
         bundle=data.get("bundle"),
     )
-    _validate_model(key, spec)
+    validate_model(key, spec)
     return spec
 
 

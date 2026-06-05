@@ -59,8 +59,30 @@ class ComfyExecutor:
         """Terminate the ComfyUI subprocess."""
         if self.process is not None:
             self.process.terminate()
-            self.process.wait(timeout=10)
+            try:
+                self.process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait()
             print("[comfy_wrapper] ComfyUI stopped")
+
+    def run(
+        self,
+        workflow_json: dict,
+        dest_dir: Path,
+        *,
+        ready_timeout: int = 120,
+        poll_timeout: int = 600,
+    ) -> list[Path]:
+        """Run a workflow through ComfyUI and collect its output files."""
+        try:
+            self.start_server()
+            self.wait_until_ready(timeout=ready_timeout)
+            prompt_id = self.submit_workflow(workflow_json)
+            entry = self.poll_result(prompt_id, timeout=poll_timeout)
+            return self.collect_outputs(entry, dest_dir)
+        finally:
+            self.stop_server()
 
     # ── Workflow Execution ──
 
@@ -129,12 +151,14 @@ class ComfyExecutor:
         """
         dest_dir.mkdir(parents=True, exist_ok=True)
         collected: list[Path] = []
+        declared = 0
         outputs = history.get("outputs", {})
 
         for _node_id, node_output in outputs.items():
             # Each node may have 'images' or 'gifs' (for video)
             for key in ("images", "gifs"):
                 for item in node_output.get(key, []):
+                    declared += 1
                     filename = item["filename"]
                     subfolder = item.get("subfolder", "")
                     src = Path(DEFAULT_OUTPUT_DIR) / subfolder / filename
@@ -143,5 +167,13 @@ class ComfyExecutor:
                         shutil.copy2(src, dst)
                         collected.append(dst)
                         print(f"[comfy_wrapper] Collected: {dst}")
+                    else:
+                        print(f"[comfy_wrapper] MISSING declared output: {src}")
+
+        if declared >= 1 and len(collected) == 0:
+            raise RuntimeError(
+                f"ComfyUI declared {declared} output(s) but none landed on disk "
+                f"under {DEFAULT_OUTPUT_DIR}"
+            )
 
         return collected
