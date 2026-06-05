@@ -12,3 +12,8 @@ dependencies = [
     "tomli-w>=1.2.0",
     "tqdm>=4.66.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]

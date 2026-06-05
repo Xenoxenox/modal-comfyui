@@ -23,24 +23,14 @@ def run_generate(workflow_json: dict, session_id: str) -> dict:
 
     Called inside a Modal container (serialized=True).
     """
+    cache_vol.reload()
+    sync_prepared_model_links()
+
     executor = ComfyExecutor()
-    try:
-        cache_vol.reload()
-        sync_prepared_model_links()
+    output_files = executor.run(workflow_json, Path(f"{OUTPUT_MOUNT}/{session_id}"))
 
-        executor.start_server()
-        executor.wait_until_ready()
+    created_files: dict[str, str] = {}
+    for f in output_files:
+        created_files[f.name] = base64.b64encode(f.read_bytes()).decode()
 
-        prompt_id = executor.submit_workflow(workflow_json)
-        history = executor.poll_result(prompt_id)
-
-        output_dir = Path(f"{OUTPUT_MOUNT}/{session_id}")
-        output_files = executor.collect_outputs(history, output_dir)
-
-        created_files: dict[str, str] = {}
-        for f in output_files:
-            created_files[f.name] = base64.b64encode(f.read_bytes()).decode()
-
-        return {"created_files": created_files, "session_id": session_id}
-    finally:
-        executor.stop_server()
+    return {"created_files": created_files, "session_id": session_id}
