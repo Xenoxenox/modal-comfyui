@@ -4,7 +4,7 @@
 自动停止旧的 ephemeral app，再启动 modal serve，日志写入 logs/modal_serve_[时间戳].log
 
 环境变量：
-  SERVE_IDLE_TIMEOUT   无日志增长超时秒数（默认 120）
+  SERVE_IDLE_TIMEOUT   URL 就绪前无日志增长超时秒数（默认 120）
 """
 import argparse
 import os
@@ -86,6 +86,10 @@ def _probe_url(url: str, retries: int = 5, delay: float = 3.0) -> bool:
             if i < retries - 1:
                 time.sleep(delay)
     return False
+
+
+def _idle_timeout_expired(last_change: float, now: float, timeout: int, *, service_ready: bool) -> bool:
+    return not service_ready and now - last_change > timeout
 
 
 def stop_old_apps(modal_env: str | None = None):
@@ -256,9 +260,14 @@ def main():
                 except queue.Empty:
                     if proc.poll() is not None:
                         return
-                    if time.monotonic() - last_change > IDLE_TIMEOUT:
+                    if _idle_timeout_expired(
+                        last_change,
+                        time.monotonic(),
+                        IDLE_TIMEOUT,
+                        service_ready=opened_url,
+                    ):
                         console.print(
-                            f"\n[bold yellow]No log progress for {IDLE_TIMEOUT}s[/bold yellow] "
+                            f"\n[bold yellow]No startup log progress for {IDLE_TIMEOUT}s[/bold yellow] "
                             f"[dim]Check {log_path}[/dim]"
                         )
                         _stop_process(proc)
