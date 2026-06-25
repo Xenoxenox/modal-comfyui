@@ -194,7 +194,7 @@ def nearby_directory_hint(text: str, *, limit: int = 5) -> str:
     return " Available folders: " + ", ".join(directories)
 
 
-def _project_path_candidates() -> list[str]:
+def _project_path_candidates(*, include_files: bool = False) -> list[str]:
     roots = [
         Path.cwd(),
         Path.cwd() / "workflows",
@@ -206,7 +206,11 @@ def _project_path_candidates() -> list[str]:
             continue
         candidates.append(str(root))
         try:
-            candidates.extend(str(path) for path in root.iterdir())
+            candidates.extend(
+                str(path)
+                for path in root.iterdir()
+                if include_files or path.is_dir()
+            )
         except OSError:
             continue
     return sorted(dict.fromkeys(candidates))
@@ -218,7 +222,7 @@ def _nearest_project_path(raw_path: str) -> Path | None:
         return None
     matches = [
         Path(candidate)
-        for candidate in _project_path_candidates()
+        for candidate in _project_path_candidates(include_files=True)
         if _fuzzy_match(needle, Path(candidate).name.lower())
     ]
     files = [path for path in matches if path.is_file()]
@@ -825,7 +829,6 @@ def _add_local_model(cfg: Config) -> None:
     raw_path = questionary.path(
         "Local model file:",
         get_paths=_project_path_candidates,
-        instruction=nearby_directory_hint(""),
         style=STYLE,
     ).ask()
     if not raw_path:
