@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import hashlib
 import os
-import shutil
 import socket
 import subprocess
 import threading
@@ -35,7 +35,6 @@ else:
     from server.app import app, cache_vol, CACHE_MOUNT, sync_prepared_model_links
 
 CACHE_CUSTOM_NODES = f"{CACHE_MOUNT}/custom_nodes"
-COMFY_CUSTOM_NODES = f"{COMFY_ROOT}/custom_nodes"
 
 
 def _wait_for_port(host: str, port: int, timeout: float) -> None:
@@ -49,42 +48,8 @@ def _wait_for_port(host: str, port: int, timeout: float) -> None:
     raise TimeoutError(f"Timed out waiting for {host}:{port}")
 
 
-def _setup_persistent_custom_nodes() -> None:
-    src = Path(COMFY_CUSTOM_NODES)
-    dst = Path(CACHE_CUSTOM_NODES)
-    dst.mkdir(parents=True, exist_ok=True)
-
-    seeded = False
-    if src.exists() and not src.is_symlink():
-        for item in src.iterdir():
-            target = dst / item.name
-            if target.exists():
-                continue
-            if item.is_dir():
-                shutil.copytree(str(item), str(target))
-            else:
-                shutil.copy2(str(item), str(target))
-            seeded = True
-        shutil.rmtree(str(src))
-        if seeded:
-            try:
-                cache_vol.commit()
-            except Exception as exc:
-                print(f"WARNING: custom node seed commit failed: {exc}")
-
-    if src.is_symlink():
-        src.unlink()
-    src.symlink_to(str(dst))
-
-    for node_dir in dst.iterdir():
-        req = node_dir / "requirements.txt"
-        if node_dir.is_dir() and req.exists():
-            result = subprocess.run(
-                ["pip", "install", "-r", str(req), "-q"],
-                check=False,
-            )
-            if result.returncode != 0:
-                print(f"WARNING: pip install failed for {req}")
+def _ensure_experimental_nodes_dir() -> None:
+    Path(CACHE_CUSTOM_NODES).mkdir(parents=True, exist_ok=True)
 
 
 def _start_commit_watcher() -> None:
@@ -129,21 +94,51 @@ def _start_comfy_process() -> subprocess.Popen:
     )
 
 
-def _start_comfy_supervisor() -> None:
-    process = _start_comfy_process()
+def _start_comfy_supervisor() -> list[subprocess.Popen]:
+    process_ref = [_start_comfy_process()]
 
     def _supervise() -> None:
-        nonlocal process
         while True:
-            returncode = process.wait()
+            returncode = process_ref[0].wait()
             print(
                 f"WARNING: ComfyUI exited with code {returncode}; "
                 f"restarting in {COMFY_RESTART_DELAY}s"
             )
             time.sleep(COMFY_RESTART_DELAY)
-            process = _start_comfy_process()
+            process_ref[0] = _start_comfy_process()
 
     threading.Thread(target=_supervise, daemon=True).start()
+    return process_ref
+
+
+def _start_dep_installer(process_ref: list[subprocess.Popen]) -> None:
+    def _install() -> None:
+        root = Path(CACHE_CUSTOM_NODES)
+        any_installed = False
+        for node_dir in root.iterdir():
+            if not node_dir.is_dir():
+                continue
+            req = node_dir / "requirements.txt"
+            if not req.exists():
+                continue
+            marker = node_dir / ".deps-installed"
+            current_hash = hashlib.sha256(req.read_bytes()).hexdigest()
+            if marker.exists() and marker.read_text().strip() == current_hash:
+                continue
+            result = subprocess.run(
+                ["pip", "install", "-r", str(req), "-q"],
+                check=False,
+            )
+            if result.returncode == 0:
+                marker.write_text(current_hash)
+                any_installed = True
+            else:
+                print(f"WARNING: pip install failed for {req}")
+        if any_installed:
+            process_ref[0].terminate()
+
+    threading.Thread(target=_install, daemon=True).start()
+
 
 @app.function(
     max_containers=1,
@@ -157,10 +152,11 @@ def _start_comfy_supervisor() -> None:
 @modal.web_server(NGINX_PORT, startup_timeout=60)
 def ui():
     cache_vol.reload()
-    _setup_persistent_custom_nodes()
+    _ensure_experimental_nodes_dir()
     sync_prepared_model_links()
     _start_commit_watcher()
-    _start_comfy_supervisor()
+    process_ref = _start_comfy_supervisor()
+    _start_dep_installer(process_ref)
     _wait_for_port("127.0.0.1", COMFYUI_PORT, STARTUP_TIMEOUT)
     subprocess.Popen(
         ["nginx", "-c", NGINX_CONF, "-g", "daemon off;"]
