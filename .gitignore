@@ -54,3 +54,5 @@ output/
 .ref/
 
 config.toml
+
+tests/
