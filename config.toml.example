@@ -89,3 +89,7 @@
 # [plugins.comfyui-easy-use]
 # node_id = "comfyui-easy-use"
 # name = "ComfyUI Easy Use"
+
+# Nodes not in comfy.org registry must use repo = URL:
+# [plugins.comfyui-newbie-nodes]
+# repo = "https://github.com/NewBieAI-Lab/ComfyUI-Newbie-Nodes"
