@@ -261,8 +261,8 @@ python serve.py --gpu L4
 ```
 
 It sets UTF-8 environment variables, stops old ephemeral Modal apps, writes logs
-to `logs/modal_serve_<timestamp>.log`, waits for the Modal URL, and probes the
-ComfyUI health endpoint.
+to `logs/modal_serve_<timestamp>.log`, starts the local output watcher, waits
+for the Modal URL, and probes the ComfyUI health endpoint.
 
 Modal may spend time allocating GPU capacity, checking the image, building, or
 mounting the container before ComfyUI is reachable. The launcher displays these
@@ -306,14 +306,15 @@ The Web UI is served through nginx on Modal port `8000`. ComfyUI itself listens
 only on `127.0.0.1:8188` inside the container. Keep using the Modal URL printed
 by `serve.py`.
 
-If you want Web UI outputs saved locally while using the browser, run the local
-watcher in another terminal:
+`serve.py` starts the local output watcher automatically and downloads new Web UI
+images into `output/`. Use `--no-watch` only when you do not want local copies.
+
+For deployed endpoints or manual `modal serve` sessions, you can still run the
+watcher directly:
 
 ```bash
 python -m client.watch <modal-web-ui-url>
 ```
-
-It polls ComfyUI history and downloads new images into `output/`.
 
 ## Deploy the Web UI
 

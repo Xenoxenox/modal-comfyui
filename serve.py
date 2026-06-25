@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 用法：python serve.py [--gpu L4]
-自动停止旧的 ephemeral app，再启动 modal serve，日志写入 logs/modal_serve_[时间戳].log
+自动停止旧的 ephemeral app，启动 modal serve，并自动下载 Web UI 生成图片。
 
 环境变量：
   SERVE_IDLE_TIMEOUT   URL 就绪前无日志增长超时秒数（默认 120）
@@ -90,6 +90,35 @@ def _probe_url(url: str, retries: int = 5, delay: float = 3.0) -> bool:
 
 def _idle_timeout_expired(last_change: float, now: float, timeout: int, *, service_ready: bool) -> bool:
     return not service_ready and now - last_change > timeout
+
+
+def _start_output_watcher(url: str) -> subprocess.Popen[str] | None:
+    watch_log_path = modal_log_path("comfy_watch")
+    cmd = [sys.executable, "-m", "client.watch", url]
+    try:
+        with watch_log_path.open("w", encoding="utf-8", errors="replace") as watch_log:
+            proc = subprocess.Popen(
+                cmd,
+                env={
+                    **os.environ,
+                    "PYTHONUTF8": "1",
+                    "PYTHONIOENCODING": "utf-8",
+                },
+                stdout=watch_log,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+            )
+    except Exception as exc:
+        console.print(f"[bold yellow]Watcher start failed:[/] {exc}")
+        return None
+    console.print(
+        f"[dim]Local output watcher started[/dim] "
+        f"[dim]log={watch_log_path} output=output/[/dim]"
+    )
+    return proc
 
 
 def stop_old_apps(modal_env: str | None = None):
@@ -204,6 +233,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not automatically open the ComfyUI URL in the default browser.",
     )
+    parser.add_argument(
+        "--no-watch",
+        action="store_true",
+        help="Do not start the local output watcher that downloads generated images.",
+    )
     return parser
 
 
@@ -248,6 +282,7 @@ def main():
     printed_run_info = False
     printed_web_url = False
     opened_url = False
+    watch_proc: subprocess.Popen[str] | None = None
     last_phase = ""
 
     output_lines = _start_output_reader(proc)
@@ -311,6 +346,8 @@ def main():
 
                     if "web_url" in run_info and not opened_url:
                         url = run_info["web_url"]
+                        if watch_proc is None and not args.no_watch:
+                            watch_proc = _start_output_watcher(url)
                         if not args.no_open:
                             with suppress(Exception):
                                 webbrowser.open(url)
@@ -322,6 +359,9 @@ def main():
     except KeyboardInterrupt:
         _stop_process(proc, interrupted=True)
         return
+    finally:
+        if watch_proc is not None:
+            _stop_process(watch_proc)
 
 
 if __name__ == "__main__":

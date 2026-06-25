@@ -14,13 +14,13 @@ bash ./setup.sh                # WSL/Linux/macOS zero-dependency setup
 uv sync                        # manual dependency install
 uv run modal setup             # authenticate with Modal (one-time)
 python manage.py               # interactive manager for Run ComfyUI, config, deploy, volumes
-python serve.py --gpu L4       # dev Web UI — auto-cleans old apps, logs to logs/modal_serve_[timestamp].log
+python serve.py --gpu L4       # dev Web UI — auto-cleans old apps, logs, starts output watcher
 python serve.py --empty --gpu T4  # empty workflow-editing Web UI in Modal Environment "empty"
 modal serve server/ui.py       # dev Web UI (manual)
 python -m scripts.deploy_ui --gpu L4  # production Web UI — persistent endpoint
 python -m scripts.deploy_ui --empty --gpu T4  # persistent empty workflow-editing endpoint
 python -m client.infer         # headless inference — interactive or CLI GPU/workflow selection
-python -m client.watch <url>   # local watcher — download new Web UI outputs into output/
+python -m client.watch <url>   # manual watcher for deployed/manual Web UI URLs
 python -m scripts.manage_volumes  # manage Modal Volumes (tree/list/download/clean)
 ```
 
@@ -208,9 +208,10 @@ node_id = "comfyui-my-nodes"   # or use repo = "https://github.com/..."
 
 ### Local Output Watcher (`client/watch.py`)
 
-- `output/` is populated by the local watcher, not by `modal serve` itself
+- `serve.py` starts the local watcher by default and writes new Web UI images under `output/`
 - The watcher polls `GET /history` and downloads images via `GET /view`
-- Run `python -m client.watch <modal-web-ui-url>` when using the Web UI and you want local files under `output/`
+- Use `python serve.py --no-watch ...` to disable automatic local copies
+- Run `python -m client.watch <modal-web-ui-url>` manually for deployed endpoints or direct `modal serve` sessions
 
 
 
