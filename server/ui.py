@@ -21,6 +21,7 @@ STARTUP_POLL_INTERVAL = 0.5
 STARTUP_TIMEOUT = 55
 COMFY_ROOT = "/root/comfy/ComfyUI"
 COMMIT_QUIET_SECS = 30
+COMFY_RESTART_DELAY = 5
 
 if os.environ.get("MODAL_IS_REMOTE") == "1":
     cache_vol = modal.Volume.from_name("comfy-cache", create_if_missing=True)
@@ -113,6 +114,37 @@ def _start_commit_watcher() -> None:
 
     threading.Thread(target=_watcher, daemon=True).start()
 
+
+def _start_comfy_process() -> subprocess.Popen:
+    return subprocess.Popen(
+        [
+            "comfy",
+            "launch",
+            "--",
+            "--listen",
+            "127.0.0.1",
+            "--port",
+            str(COMFYUI_PORT),
+        ]
+    )
+
+
+def _start_comfy_supervisor() -> None:
+    process = _start_comfy_process()
+
+    def _supervise() -> None:
+        nonlocal process
+        while True:
+            returncode = process.wait()
+            print(
+                f"WARNING: ComfyUI exited with code {returncode}; "
+                f"restarting in {COMFY_RESTART_DELAY}s"
+            )
+            time.sleep(COMFY_RESTART_DELAY)
+            process = _start_comfy_process()
+
+    threading.Thread(target=_supervise, daemon=True).start()
+
 @app.function(
     max_containers=1,
     gpu=WEB_UI_GPU,
@@ -128,18 +160,7 @@ def ui():
     _setup_persistent_custom_nodes()
     sync_prepared_model_links()
     _start_commit_watcher()
-    subprocess.Popen(
-        [
-            "comfy",
-            "launch",
-            "--background",
-            "--",
-            "--listen",
-            "127.0.0.1",
-            "--port",
-            str(COMFYUI_PORT),
-        ]
-    )
+    _start_comfy_supervisor()
     _wait_for_port("127.0.0.1", COMFYUI_PORT, STARTUP_TIMEOUT)
     subprocess.Popen(
         ["nginx", "-c", NGINX_CONF, "-g", "daemon off;"]

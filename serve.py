@@ -74,6 +74,19 @@ ERROR_SIGNALS = [
     "Traceback (most recent call last)",
     "Exception:",
 ]
+REMOTE_LOG_ERRORS = {"Traceback (most recent call last)", "Exception:"}
+RECOVERABLE_RUNTIME_ERRORS = {"Connection refused"}
+
+
+def _error_signal(line: str, *, service_ready: bool) -> str | None:
+    for err in ERROR_SIGNALS:
+        if err in line:
+            if err in REMOTE_LOG_ERRORS:
+                return None
+            if service_ready and err in RECOVERABLE_RUNTIME_ERRORS:
+                return None
+            return err
+    return None
 
 
 def _probe_url(url: str, retries: int = 5, delay: float = 3.0) -> bool:
@@ -324,12 +337,12 @@ def main():
                         console.print(f"[dim]{phase}[/]")
                         last_phase = phase
 
-                    for err in ERROR_SIGNALS:
-                        if err in line:
-                            console.print(f"\n[bold red]Error detected:[/] {err!r}")
-                            console.print(f"[dim]Check log: {log_path}[/dim]")
-                            _stop_process(proc)
-                            return
+                    err = _error_signal(line, service_ready=opened_url)
+                    if err:
+                        console.print(f"\n[bold red]Error detected:[/] {err!r}")
+                        console.print(f"[dim]Check log: {log_path}[/dim]")
+                        _stop_process(proc)
+                        return
 
                     run_info = parse_modal_run_info(text)
                     if run_info and not printed_run_info and (
