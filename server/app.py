@@ -405,6 +405,11 @@ image = (
         "/root/nginx.conf",
         copy=True,
     )
+    .add_local_file(
+        str(root_dir / "extra_model_paths.yaml"),
+        "/root/comfy/ComfyUI/extra_model_paths.yaml",
+        copy=True,
+    )
     .env({
         "HF_HUB_ENABLE_HF_TRANSFER": "1",
         **_prepare_secret_env(),

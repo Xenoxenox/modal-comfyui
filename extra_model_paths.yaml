@@ -1,0 +1,3 @@
+image-nodes:
+  base_path: /root/comfy/ComfyUI
+  custom_nodes: blessed_custom_nodes
