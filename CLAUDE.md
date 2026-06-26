@@ -174,6 +174,39 @@ model_dir = "loras"
 node_id = "comfyui-my-nodes"   # or use repo = "https://github.com/..."
 ```
 
+`node_id` and `repo` — at least one required; `repo` takes priority when both set
+(loader.py:120, 270). After editing `config.toml`, rebuild image: next
+`serve.py` or `deploy_ui` triggers it automatically.
+
+### Custom Node Layers: Blessed vs Experimental
+
+Two layers coexist without collision:
+
+| Layer | Defined in | Install | Storage | Runtime path |
+|-------|-----------|---------|---------|--------------|
+| Blessed | `config.toml` `[plugins.*]` | `comfy node install` at image build (app.py:421) | Image → renamed to `blessed_custom_nodes/` | `extra_model_paths.yaml` scans |
+| Experimental | ComfyUI Manager UI | Runtime → symlink to Volume | `comfy-cache:/cache/custom_nodes/` | symlink `custom_nodes` → `/cache/custom_nodes` |
+
+Blessed pipeline:
+```
+config.toml [plugins.<name>] → to_legacy() → comfy node install <id>
+  → image custom_nodes/ → runtime rename → blessed_custom_nodes/
+  → scanned by extra_model_paths.yaml
+```
+
+Experimental pipeline:
+```
+Manager UI install → /root/comfy/ComfyUI/custom_nodes/<node>
+  → symlink (_ensure_experimental_nodes_dir() in server/ui.py)
+  → /cache/custom_nodes/<node>  (Modal Volume, persistent across restarts)
+```
+
+To **promote** Experimental → Blessed: get the repo URL from the running
+container (`cd /cache/custom_nodes/<node> && git remote get-url origin`),
+add a `[plugins.<name>]` entry with `repo`, rebuild the image, then manually
+remove the old Volume copy via `scripts/manage_volumes.py` to avoid duplicate
+loading.
+
 ### Currently Configured Models
 
 | Model | Type | ComfyUI Path |
@@ -205,6 +238,24 @@ node_id = "comfyui-my-nodes"   # or use repo = "https://github.com/..."
 - Scales to zero after 60s idle (`scaledown_window`)
 - Headless inference mounts `comfy-output` and writes generated files under `/output/<session-id>/`
 - Detached headless runs print an App ID, dashboard URL, function call URL, logs command, and stop command; the stop command is only a manual fallback if the app lingers
+
+### Custom Node Persistence (symlink)
+
+`_ensure_experimental_nodes_dir()` in `server/ui.py` runs at container startup:
+
+1. Ensures `/cache/custom_nodes` exists (Modal Volume, persistent).
+2. If `/root/comfy/ComfyUI/custom_nodes` is a real directory (not a symlink),
+   renames it to `blessed_custom_nodes` — this is where baked Blessed nodes live.
+3. Creates symlink `/root/comfy/ComfyUI/custom_nodes` → `/cache/custom_nodes`.
+
+`extra_model_paths.yaml` scans `blessed_custom_nodes` so Blessed nodes remain
+visible after the rename. The symlink lets ComfyUI load both layers:
+- `blessed_custom_nodes/` — Blessed (baked in image)
+- `custom_nodes/` → `/cache/custom_nodes/` — Experimental (Volume, Manager-installed)
+
+This means Manager-installed nodes survive container restarts and cold starts.
+Full-cycle validation (install → stop → cold-start → verify) passed via Chrome
+DevTools MCP testing on `feat/persist-custom-nodes`.
 
 ### Local Output Watcher (`client/watch.py`)
 

@@ -169,6 +169,91 @@ container. Valid directories include `checkpoints`, `clip`, `clip_vision`,
 `photomaker`, `style_models`, `text_encoders`, `unet`, `upscale_models`, `vae`,
 and `vae_approx`.
 
+### Custom Nodes: Blessed vs Experimental
+
+This project supports **two layers** of custom nodes that complement each other:
+
+| Layer | Where declared | Installed at | Storage | Survives restart |
+|-------|---------------|-------------|---------|------------------|
+| **Blessed** | `config.toml` `[plugins.*]` | Image build time (`comfy node install`) | Baked into image | Always (part of image) |
+| **Experimental** | ComfyUI Manager UI | Runtime (Manager → Volume) | Modal Volume `comfy-cache` | Yes (symlink → Volume) |
+
+The two layers are stacked so Manager-installed nodes never collide with
+baked-in Blessed nodes. Details below.
+
+#### Blessed Nodes（烤进镜像）
+
+`config.toml` `[plugins.*]` entries declare nodes that are baked into the Modal
+image at build time. The pipeline:
+
+```
+config.toml [plugins.<name>]
+  → to_legacy() takes repo or node_id (loader.py:270)
+  → image build: comfy node install <id> (app.py:421)
+  → installed into image custom_nodes/
+  → runtime: _ensure_experimental_nodes_dir() renames custom_nodes/ → blessed_custom_nodes/
+  → scanned by extra_model_paths.yaml
+```
+
+**Two ways to declare a Blessed Node:**
+
+① **Node in comfy.org registry** — use `node_id`
+
+```toml
+[plugins.comfyui-easy-use]
+node_id = "comfyui-easy-use"
+name = "ComfyUI Easy Use"   # optional, comment only, does not affect install
+```
+
+② **Node NOT in registry** — use `repo` (GitHub URL)
+
+```toml
+[plugins.comfyui-newbie-nodes]
+repo = "https://github.com/NewBieAI-Lab/ComfyUI-Newbie-Nodes"
+```
+
+`node_id` and `repo` are **mutually exclusive in effect** — `repo` takes
+priority when both are set (loader.py:270). At least one is required, otherwise
+`ConfigError` is raised (loader.py:120).
+
+After editing `config.toml`, you **must rebuild the image**. The next
+`python serve.py` or `deploy_ui` will trigger image rebuild automatically.
+
+#### Experimental Nodes（运行时安装）
+
+Nodes installed through ComfyUI Manager UI at runtime land in Modal Volume
+`comfy-cache` under `/cache/custom_nodes/`. A symlink created at container
+startup makes them visible to ComfyUI:
+
+```
+Manager install → /root/comfy/ComfyUI/custom_nodes/<node>
+                     ↓ symlink (created by _ensure_experimental_nodes_dir())
+                  /cache/custom_nodes/<node>  ← Modal Volume, persistent
+```
+
+This means Experimental nodes survive app stop/restart and cold starts —
+validated through full-cycle Chrome DevTools MCP testing.
+
+#### Promoting Experimental → Blessed
+
+To promote a Manager-installed node to Blessed:
+
+1. SSH into the running container, find the node:
+   ```bash
+   cd /cache/custom_nodes/<node-dir> && git remote get-url origin
+   ```
+2. Add a `[plugins.<name>]` entry in `config.toml` with the `repo` URL.
+3. Rebuild the image — the node will now be baked into `blessed_custom_nodes/`.
+4. The old Experimental copy in the Volume is **not** auto-deleted. Remove it
+   manually via `python -m scripts.manage_volumes` to avoid duplicate loading
+   (see `config.toml.example` lines 97–102).
+
+#### How to find node_id / repo
+
+- **Registry id**: look up the node in ComfyUI Manager UI or at
+  https://registry.comfy.org.
+- **GitHub repo**: the repository URL of the custom node.
+
 For private downloads, create Modal secrets with the keys expected inside Modal:
 
 | Local env var | Default Modal secret name | Key inside Modal |
