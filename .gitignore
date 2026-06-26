@@ -56,3 +56,5 @@ output/
 config.toml
 
 tests/
+CONTEXT.md
+docs/
