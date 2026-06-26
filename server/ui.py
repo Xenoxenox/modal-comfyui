@@ -50,6 +50,12 @@ def _wait_for_port(host: str, port: int, timeout: float) -> None:
 
 def _ensure_experimental_nodes_dir() -> None:
     Path(CACHE_CUSTOM_NODES).mkdir(parents=True, exist_ok=True)
+    default_nodes = Path(COMFY_ROOT) / "custom_nodes"
+    blessed_nodes = Path(COMFY_ROOT) / "blessed_custom_nodes"
+    if default_nodes.is_dir() and not default_nodes.is_symlink():
+        default_nodes.rename(blessed_nodes)
+    if not default_nodes.exists():
+        default_nodes.symlink_to(CACHE_CUSTOM_NODES)
 
 
 def _start_commit_watcher() -> None:
