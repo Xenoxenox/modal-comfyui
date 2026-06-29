@@ -5,8 +5,8 @@
     python -m client.watch          # 交互输入 URL
 
 工作原理：
-    每隔 POLL_INTERVAL 秒轮询 ComfyUI GET /history，
-    对比本地已下载集合，发现新 prompt 后通过 GET /view 下载全部输出图片，
+    每隔 POLL_INTERVAL 秒轮询 ComfyUI GET /api/history，
+    对比本地已下载集合，发现新 prompt 后通过 GET /api/view 下载全部输出图片，
     写入 output/<prompt_id前8位>_<原始文件名>。
     整个过程不经过 Modal Storage，无需修改服务端代码。
 """
@@ -36,14 +36,25 @@ def strip_trailing_slash(url: str) -> str:
     return url.rstrip("/")
 
 
+def api_url(base_url: str, path: str) -> str:
+    return f"{strip_trailing_slash(base_url)}/api/{path.lstrip('/')}"
+
+
+def make_session() -> requests.Session:
+    session = requests.Session()
+    session.trust_env = False
+    session.headers.update({"User-Agent": "comfyui-watch/1.0"})
+    return session
+
+
 def poll_once(
     base_url: str,
     session: requests.Session,
     downloaded_prompts: set[str],
     output_dir: Path,
 ) -> int:
-    """检查一次 /history，下载所有新图片。返回本次新下载的文件数。"""
-    resp = session.get(f"{base_url}/history", timeout=10)
+    """检查一次 /api/history，下载所有新图片。返回本次新下载的文件数。"""
+    resp = session.get(api_url(base_url, "history"), timeout=10)
     resp.raise_for_status()
     history: dict = resp.json()  # {prompt_id: {outputs: {...}, ...}}
 
@@ -68,7 +79,7 @@ def poll_once(
                 }
                 try:
                     img_resp = session.get(
-                        f"{base_url}/view", params=params, timeout=60
+                        api_url(base_url, "view"), params=params, timeout=60
                     )
                     img_resp.raise_for_status()
                 except Exception as exc:
@@ -99,9 +110,7 @@ def watch(base_url: str, output_dir: Path) -> None:
     downloaded_prompts: set[str] = set()
     total_downloaded = 0
 
-    session = requests.Session()
-    # 给 requests 一个友好的 User-Agent，避免被某些代理拦截
-    session.headers.update({"User-Agent": "comfyui-watch/1.0"})
+    session = make_session()
 
     logging.info("🔍 开始监听 ComfyUI: %s", base_url)
     logging.info("📁 本地输出目录: %s", output_dir.resolve())
@@ -109,7 +118,7 @@ def watch(base_url: str, output_dir: Path) -> None:
 
     # 启动时先扫描一次，将历史 prompt 标记为已处理（不重复下载旧图）
     try:
-        resp = session.get(f"{base_url}/history", timeout=10)
+        resp = session.get(api_url(base_url, "history"), timeout=10)
         resp.raise_for_status()
         existing = set(resp.json().keys())
         downloaded_prompts.update(existing)
