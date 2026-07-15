@@ -35,6 +35,7 @@ else:
     from server.app import app, cache_vol, CACHE_MOUNT, sync_prepared_model_links
 
 CACHE_CUSTOM_NODES = f"{CACHE_MOUNT}/custom_nodes"
+CACHE_USER_DIR = f"{CACHE_MOUNT}/user"
 
 
 def _wait_for_port(host: str, port: int, timeout: float) -> None:
@@ -96,6 +97,8 @@ def _start_comfy_process() -> subprocess.Popen:
             "127.0.0.1",
             "--port",
             str(COMFYUI_PORT),
+            "--user-directory",
+            CACHE_USER_DIR,
         ]
     )
 
@@ -158,6 +161,7 @@ def _start_dep_installer(process_ref: list[subprocess.Popen]) -> None:
 @modal.web_server(NGINX_PORT, startup_timeout=60)
 def ui():
     cache_vol.reload()
+    Path(CACHE_USER_DIR).mkdir(parents=True, exist_ok=True)
     _ensure_experimental_nodes_dir()
     sync_prepared_model_links()
     _start_commit_watcher()
