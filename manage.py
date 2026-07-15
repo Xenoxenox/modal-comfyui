@@ -15,7 +15,7 @@ import sys
 from collections.abc import Callable
 from collections import defaultdict
 from pathlib import Path, PurePosixPath
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import requests
 
@@ -571,14 +571,19 @@ def _parse_hf_input(raw: str) -> str:
 
 def _hf_list_files(repo_id: str) -> list[str] | None:
     try:
-        from huggingface_hub import HfApi
-
-        api = HfApi()
-        info = api.repo_info(repo_id)
-        if info.siblings is None:
+        token = os.environ.get("HF_TOKEN")
+        response = requests.get(
+            f"https://huggingface.co/api/models/{quote(repo_id, safe='/')}",
+            params={"expand[]": "siblings"},
+            headers={"Authorization": f"Bearer {token}"} if token else None,
+            timeout=15,
+        )
+        response.raise_for_status()
+        siblings = response.json().get("siblings")
+        if siblings is None:
             return None
-        return [s.rfilename for s in info.siblings]
-    except Exception as e:
+        return [item["rfilename"] for item in siblings]
+    except (requests.RequestException, ValueError, AttributeError, TypeError, KeyError) as e:
         print(f"  {R}HF API failed:{RST} {e}")
         return None
 

@@ -40,3 +40,25 @@ def test_add_local_model_path_prompt_uses_supported_kwargs(monkeypatch) -> None:
 
     assert captured_kwargs["get_paths"] is manage._project_path_candidates
     assert "instruction" not in captured_kwargs
+
+
+def test_hf_list_files_uses_hub_api(monkeypatch) -> None:
+    class Response:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {"siblings": [{"rfilename": "weights/model.safetensors"}]}
+
+    def fake_get(url: str, **kwargs):
+        assert url == "https://huggingface.co/api/models/circlestone-labs/Anima"
+        assert kwargs["params"] == {"expand[]": "siblings"}
+        assert kwargs["timeout"] == 15
+        return Response()
+
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.setattr(manage.requests, "get", fake_get)
+
+    assert manage._hf_list_files("circlestone-labs/Anima") == [
+        "weights/model.safetensors"
+    ]
