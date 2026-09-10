@@ -10,8 +10,9 @@ import modal
 from modal.exception import NotFoundError
 
 from server.model_manifest import (
-    _link_cached_path,
-    _manifest_item,
+    MANIFEST_PATH,
+    link_cached_path,
+    manifest_item,
     sync_prepared_model_links as _sync_model_links,
     write_model_link_manifest,
 )
@@ -28,7 +29,6 @@ COMFY_DEFAULT_USER_DIR = COMFY_ROOT_PATH / "user" / "default"
 COMFY_WORKFLOWS_DIR = COMFY_DEFAULT_USER_DIR / "workflows"
 WORKFLOW_SEED_DIR = "/root/comfy/workflow-seed"
 CONFIG_PATH = "/root/config.toml"
-MODEL_LINK_MANIFEST = Path(CACHE_MOUNT) / ".modal-comfyui-model-links.json"
 DEFAULT_HF_SECRET_NAME = "ComfyUI"
 DEFAULT_CIVITAI_SECRET_NAME = "civitai-api-key"
 DISABLED_SECRET_NAMES = {"", "none", "false"}
@@ -156,7 +156,7 @@ def _target_name(filename: str, save_as: str | None = None) -> str:
 
 
 def sync_prepared_model_links() -> dict[str, Any]:
-    return _sync_model_links(MODEL_LINK_MANIFEST)
+    return _sync_model_links(MANIFEST_PATH)
 
 
 def hf_download(
@@ -359,10 +359,10 @@ def prepare_model_links(dry_run: bool = False, force: bool = False) -> dict[str,
             )
         )
 
-    write_model_link_manifest(MODEL_LINK_MANIFEST, links)
+    write_model_link_manifest(MANIFEST_PATH, links)
     summary["links"] = links
     summary["linked"] = len(links)
-    print(f"DONE prepare_models linked={len(links)} manifest={MODEL_LINK_MANIFEST}", flush=True)
+    print(f"DONE prepare_models linked={len(links)} manifest={MANIFEST_PATH}", flush=True)
     return summary
 
 

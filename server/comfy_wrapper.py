@@ -12,7 +12,9 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from urllib import request, error as urlerror
+from urllib import error as urlerror, request
+
+from server.comfy_runtime import launch_comfy
 
 
 COMFY_ROOT = "/root/comfy/ComfyUI"
@@ -31,12 +33,8 @@ class ComfyExecutor:
     # ── Lifecycle ──
 
     def start_server(self) -> None:
-        """Launch ComfyUI as a background subprocess."""
-        cmd = (
-            f"comfy launch --background "
-            f"-- --listen {self.host} --port {self.port}"
-        )
-        self.process = subprocess.Popen(cmd, shell=True)
+        """Launch the foreground ComfyUI process."""
+        self.process = launch_comfy(self.host, self.port)
         print(f"[comfy_wrapper] ComfyUI starting on {self.base_url}")
 
     def wait_until_ready(self, timeout: int = 120) -> None:

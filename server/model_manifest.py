@@ -4,8 +4,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+from server.comfy_runtime import CACHE_MOUNT
 
-def _link_cached_path(source_path: Path, target_path: Path) -> str:
+MANIFEST_FILENAME = ".modal-comfyui-model-links.json"
+MANIFEST_PATH = Path(CACHE_MOUNT) / MANIFEST_FILENAME
+
+
+def link_cached_path(source_path: Path, target_path: Path) -> str:
     target_path.parent.mkdir(parents=True, exist_ok=True)
     if target_path.exists() or target_path.is_symlink():
         target_path.unlink()
@@ -13,7 +18,7 @@ def _link_cached_path(source_path: Path, target_path: Path) -> str:
     return str(target_path)
 
 
-def _manifest_item(source_path: Path, target_path: Path, source: str) -> dict[str, str]:
+def manifest_item(source_path: Path, target_path: Path, source: str) -> dict[str, str]:
     return {
         "source": source,
         "cache_path": str(source_path),
@@ -52,7 +57,7 @@ def sync_prepared_model_links(manifest_path: Path) -> dict[str, Any]:
             missing.append(item)
             print(f"SKIP model link missing cache path: {source_path}", flush=True)
             continue
-        _link_cached_path(source_path, target_path)
+        link_cached_path(source_path, target_path)
         linked += 1
 
     print(f"DONE model link sync: linked={linked} missing={len(missing)}", flush=True)

@@ -13,6 +13,7 @@ import base64
 from pathlib import Path
 
 from server.app import cache_vol, sync_prepared_model_links
+from server.comfy_runtime import ensure_runtime_dirs
 from server.comfy_wrapper import ComfyExecutor
 
 OUTPUT_MOUNT = "/output"
@@ -24,6 +25,7 @@ def run_generate(workflow_json: dict, session_id: str) -> dict:
     Called inside a Modal container (serialized=True).
     """
     cache_vol.reload()
+    ensure_runtime_dirs()
     sync_prepared_model_links()
 
     executor = ComfyExecutor()

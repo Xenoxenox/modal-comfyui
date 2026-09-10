@@ -1,3 +1,4 @@
-image-nodes:
-  base_path: /root/comfy/ComfyUI
-  custom_nodes: blessed_custom_nodes
+volume-nodes:
+  base_path: /cache
+  custom_nodes: custom_nodes
+  is_default: true
