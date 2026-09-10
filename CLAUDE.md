@@ -24,7 +24,7 @@ python -m client.watch <url>   # manual watcher for deployed/manual Web UI URLs
 python -m scripts.manage_volumes  # manage Modal Volumes (tree/list/download/clean)
 ```
 
-No test framework or linter is configured in this repo.
+`pytest` is the test runner (`uv run pytest`); `tests/` is version-controlled. No linter/formatter config is present.
 
 ## Before Running Any Modal Command
 
@@ -115,13 +115,29 @@ modal-comfyui/
 │   ├── app.py           # Modal App, Image, Volumes, model download functions
 │   ├── ui.py            # Web UI Function (@modal.web_server)
 │   ├── generate.py      # Headless inference logic (called via serialized=True)
-│   └── comfy_wrapper.py # ComfyUI subprocess management & HTTP API wrapper
+│   ├── comfy_runtime.py # Shared ComfyUI launch/supervision + Volume dir setup
+│   ├── comfy_wrapper.py # ComfyUI subprocess management & HTTP API wrapper
+│   └── model_manifest.py # Model symlink manifest read/write
 ├── config/              # Config schema and loader (copied into image)
 │   ├── schema.py        # ModelSpec, PluginSpec, Config dataclasses
-│   └── loader.py        # load_config(), save_config(), to_legacy()
-├── scripts/
-│   └── manage_volumes.py  # Volume tree/listing and cleanup
+│   └── loader.py        # load_config(), save_config(), validation, to_legacy()
+├── scripts/             # Local helper package (TUI, Modal CLI/status, Volumes)
+│   ├── manage_volumes.py  # Volume tree/listing and cleanup
+│   ├── huggingface.py     # HF repo/file discovery helpers
+│   ├── local_paths.py     # TUI path/prompt helpers
+│   ├── modal_command.py   # Canonical Modal CLI invocation + UTF-8 env
+│   ├── volume_fs.py       # Modal Volume entry/path/read helpers
+│   ├── tui.py             # Shared rich console, styles, panels
+│   ├── modal_status.py    # Fresh-subprocess Modal account/secret probe
+│   ├── modal_run_info.py  # Run-info parsing, log commands, log streaming
+│   ├── billing.py         # Best-effort session billing summary
+│   ├── preferences.py     # Allowlisted local preferences
+│   ├── web_ui_mode.py     # Web UI mode argparse/env helpers
+│   └── deploy_ui.py       # Persistent Web UI deploy entrypoint
+├── manage.py            # Interactive TUI (models, plugins, run, deploy, volumes)
 ├── serve.py             # Convenience launcher: selects GPU, cleans stuck apps, starts modal serve
+├── tests/               # pytest suite (tracked)
+├── extra_model_paths.yaml  # Baked into the image: Volume custom_nodes as the default scan path
 ├── workflows/           # Workflow JSON files (copied into image at build time)
 │   └── newbie-official.json  # NewBie image Exp0.1 official workflow
 ├── config.toml          # (gitignored) Models + plugins config
@@ -184,21 +200,20 @@ Two layers coexist without collision:
 
 | Layer | Defined in | Install | Storage | Runtime path |
 |-------|-----------|---------|---------|--------------|
-| Blessed | `config.toml` `[plugins.*]` | `comfy node install` at image build (app.py:421) | Image → renamed to `blessed_custom_nodes/` | `extra_model_paths.yaml` scans |
-| Experimental | ComfyUI Manager UI | Runtime → symlink to Volume | `comfy-cache:/cache/custom_nodes/` | symlink `custom_nodes` → `/cache/custom_nodes` |
+| Blessed | `config.toml` `[plugins.*]` | `comfy node install` at image build (app.py:421) | Image `custom_nodes/` | ComfyUI's built-in default path |
+| Experimental | ComfyUI Manager UI | Runtime, installed into the Volume | `comfy-cache:/cache/custom_nodes/` | `extra_model_paths.yaml` (`is_default: true`) |
 
 Blessed pipeline:
 ```
 config.toml [plugins.<name>] → to_legacy() → comfy node install <id>
-  → image custom_nodes/ → runtime rename → blessed_custom_nodes/
-  → scanned by extra_model_paths.yaml
+  → image custom_nodes/ → scanned by ComfyUI's built-in path (no runtime step)
 ```
 
 Experimental pipeline:
 ```
-Manager UI install → /root/comfy/ComfyUI/custom_nodes/<node>
-  → symlink (_ensure_experimental_nodes_dir() in server/ui.py)
-  → /cache/custom_nodes/<node>  (Modal Volume, persistent across restarts)
+Manager UI install → folder_paths.get_folder_paths("custom_nodes")[0]
+  = /cache/custom_nodes/<node>  (Modal Volume, persistent across restarts)
+  (index 0 is the Volume because extra_model_paths.yaml sets is_default: true)
 ```
 
 To **promote** Experimental → Blessed: get the repo URL from the running
@@ -239,23 +254,27 @@ loading.
 - Headless inference mounts `comfy-output` and writes generated files under `/output/<session-id>/`
 - Detached headless runs print an App ID, dashboard URL, function call URL, logs command, and stop command; the stop command is only a manual fallback if the app lingers
 
-### Custom Node Persistence (symlink)
+### Custom Node Persistence (Volume default path)
 
-`_ensure_experimental_nodes_dir()` in `server/ui.py` runs at container startup:
+No symlink and no runtime rename. `extra_model_paths.yaml` (baked into the
+image) registers the Volume directory with `is_default: true`, which inserts it
+at `folder_paths.get_folder_paths("custom_nodes")[0]` — the index
+ComfyUI-Manager installs into. The image's own `custom_nodes/` directory is
+registered by ComfyUI itself and is never written at runtime:
 
-1. Ensures `/cache/custom_nodes` exists (Modal Volume, persistent).
-2. If `/root/comfy/ComfyUI/custom_nodes` is a real directory (not a symlink),
-   renames it to `blessed_custom_nodes` — this is where baked Blessed nodes live.
-3. Creates symlink `/root/comfy/ComfyUI/custom_nodes` → `/cache/custom_nodes`.
+- `custom_nodes/` (image) — Blessed nodes, rebuilt on every image build
+- `/cache/custom_nodes/` (Volume, index 0) — Experimental nodes
 
-`extra_model_paths.yaml` scans `blessed_custom_nodes` so Blessed nodes remain
-visible after the rename. The symlink lets ComfyUI load both layers:
-- `blessed_custom_nodes/` — Blessed (baked in image)
-- `custom_nodes/` → `/cache/custom_nodes/` — Experimental (Volume, Manager-installed)
+`is_default: true` is required: ComfyUI registers its built-in `custom_nodes`
+path at import time, so yaml entries are appended unless `is_default` is set.
 
-This means Manager-installed nodes survive container restarts and cold starts.
-Full-cycle validation (install → stop → cold-start → verify) passed via Chrome
-DevTools MCP testing on `feat/persist-custom-nodes`.
+`server/comfy_runtime.py` owns the shared runtime prerequisites:
+`ensure_runtime_dirs()` creates `/cache/custom_nodes` and `/cache/user` and is
+called by **both** the Web UI (`server/ui.py`) and headless inference
+(`server/generate.py`). ComfyUI's `execute_prestartup_script` calls `os.listdir`
+on every registered `custom_nodes` path without an existence guard, so skipping
+this crashes startup. `launch_comfy()` / `ComfySupervisor` are the only ComfyUI
+launch path.
 
 ### Local Output Watcher (`client/watch.py`)
 

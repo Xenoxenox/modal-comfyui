@@ -14,6 +14,10 @@ This file provides guidance to agents when working with code in this repository.
 - Empty Web UI mode must not mount default prepare secrets; the `empty` Modal Environment is expected to work without `ComfyUI` or `civitai-api-key` secrets.
 - Do not treat an empty config alone as empty mode: an old model manifest in the same `comfy-cache` would still symlink prepared models back into ComfyUI.
 - Model assets are cached in `comfy-cache`, then symlinked into ComfyUI model dirs (do not assume direct file copies).
+- Custom nodes: the Volume dir `/cache/custom_nodes` is registered by the image-baked `extra_model_paths.yaml` with `is_default: true`, which makes it `folder_paths.get_folder_paths("custom_nodes")[0]` — the path ComfyUI-Manager installs into. Image-baked nodes stay in the image's own `custom_nodes/`; nothing renames or symlinks that directory at runtime, and no entrypoint may mutate it.
+- ComfyUI's startup scan (`execute_prestartup_script`) calls `os.listdir` on every registered `custom_nodes` path without an existence guard, so a registered-but-missing directory crashes the container. Both the Web UI (`server/ui.py`) and headless inference (`server/generate.py`) therefore call `ensure_runtime_dirs()` from `server/comfy_runtime.py` before launching ComfyUI.
+- ComfyUI is launched only through `server/comfy_runtime.py` (`launch_comfy` / `ComfySupervisor`); do not add a second launch or readiness convention.
+- Modal CLI invocations go through `scripts/modal_command.py` (`modal_command()`, `utf8_env()`) so every entrypoint uses the active Python environment.
 - `prepare_models` mounts Modal secrets by name from local env vars or gitignored `config.toml` `[modal.secrets]`: `MODAL_HF_SECRET_NAME`/`hf_secret_name` defaults to `ComfyUI`, and `MODAL_CIVITAI_SECRET_NAME`/`civitai_secret_name` defaults to `civitai-api-key`. Missing default secrets are skipped so public downloads still run; empty string, `none`, or `false` disables that secret.
 - Secret names are configurable, but token env keys inside Modal stay `HF_TOKEN` and `CIVITAI_API_KEY`; do not put tokens in `config.toml`, docs, or logs.
 - TUI startup separates `Modal Account` from `Modal Secrets`: account/profile probing lives in `scripts/modal_status.py` and uses a fresh Python subprocess because the Modal SDK can cache `.modal.toml` in-process.
@@ -42,8 +46,9 @@ This file provides guidance to agents when working with code in this repository.
 - Setup scripts install `uv` when missing, use the Tsinghua PyPI mirror when `ping google.com` times out, and do not run Modal auth, create private `config.toml`, or write token values.
 
 ## Test/lint reality (important)
-- No test framework, test directory, or lint/format tool config is present in this repository.
-- There is no project-defined single-test command; adding tests requires introducing a test runner first.
+- `pytest` is the test runner and is declared in `pyproject.toml` `[dependency-groups] dev`; run `uv run pytest` (or `.venv/bin/python -m pytest tests`).
+- `tests/` is version-controlled; add a regression test with every behaviour change. Existing coverage: `test_comfy_wrapper.py`, `test_config_loader.py` (config-load validation), `test_manage_paths.py`, `test_comfy_runtime.py`, `test_volume_fs.py`, `test_custom_node_topology.py`, `test_serve_state.py`.
+- No lint/format tool config is present.
 
 ## Code patterns to preserve
 - Keep typed function signatures and `pathlib.Path` usage style.
