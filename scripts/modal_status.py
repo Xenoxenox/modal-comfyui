@@ -7,6 +7,8 @@ import subprocess
 import sys
 from collections.abc import Sequence
 
+from scripts.modal_command import modal_command
+
 
 TOKEN_RE = re.compile(r"\b(?:ak|as)-[A-Za-z0-9_-]+\b")
 AUTH_ERROR_MARKERS = (
@@ -106,7 +108,8 @@ def _fresh_status_probe_code() -> str:
     return f"""
 import json
 import subprocess
-import sys
+
+MODAL_COMMAND = {modal_command()!r}
 
 auth_markers = {AUTH_ERROR_MARKERS!r}
 result = {{
@@ -127,7 +130,7 @@ except Exception as exc:
 
 try:
     profile_proc = subprocess.run(
-        [sys.executable, "-m", "modal", "profile", "current"],
+        [*MODAL_COMMAND, "profile", "current"],
         check=False,
         capture_output=True,
         text=True,

@@ -7,6 +7,8 @@ import json
 import os
 import subprocess
 
+from scripts.modal_command import modal_command, utf8_env
+
 DEFAULT_WEB_UI_GPU = "L4"
 WEB_UI_GPU_ENV = "COMFYUI_WEB_GPU"
 CONFIG_PROFILE_ENV = "COMFYUI_CONFIG_PROFILE"
@@ -73,12 +75,12 @@ def ensure_modal_environment(modal_env: str | None) -> None:
         return
 
     result = subprocess.run(
-        ["modal", "environment", "list", "--json"],
+        modal_command("environment", "list", "--json"),
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
-        env={**os.environ, "PYTHONUTF8": "1"},
+        env=utf8_env(),
     )
     if result.returncode == 0:
         try:
@@ -94,4 +96,4 @@ def ensure_modal_environment(modal_env: str | None) -> None:
             return
 
     print(f"Creating Modal Environment: {modal_env}")
-    subprocess.run(["modal", "environment", "create", modal_env], check=True)
+    subprocess.run(modal_command("environment", "create", modal_env), check=True)

@@ -15,7 +15,7 @@ import sys
 from collections.abc import Callable
 from collections import defaultdict
 from pathlib import Path, PurePosixPath
-from urllib.parse import quote, urlparse
+from urllib.parse import urlparse
 
 import requests
 
@@ -31,7 +31,20 @@ from config.intake import (
     build_local_spec,
     build_snapshot_spec,
 )
-from config.loader import load_config, save_config, ConfigError
+from config.loader import ConfigError, load_config, save_config
+from scripts.huggingface import guess_model_dir, is_model_file, list_repo_files, parse_repo_id
+from scripts.modal_command import modal_command, utf8_env
+from scripts.local_paths import (
+    fuzzy_match,
+    nearest_project_path,
+    nearby_directory_hint,
+    normalise_cache_filename,
+    parse_local_path,
+    project_path_candidates,
+    relative_volume_path,
+    slugify,
+    windows_separator_note,
+)
 from config.schema import (
     Config,
     ModalSecrets,
@@ -129,10 +142,6 @@ def _ensure_config() -> Config:
     return load_config(CONFIG_PATH)
 
 
-def _slugify(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
-
-
 def _compact_url(url: str) -> str:
     parsed = urlparse(url)
     if not parsed.netloc:
@@ -142,91 +151,6 @@ def _compact_url(url: str) -> str:
         if match:
             return f"civitai:{match.group(1)}"
     return parsed.netloc
-
-
-def _fuzzy_match(needle: str, haystack: str) -> bool:
-    if not needle:
-        return True
-    if needle in haystack:
-        return True
-    pos = 0
-    for char in haystack:
-        if pos < len(needle) and char == needle[pos]:
-            pos += 1
-    return pos == len(needle)
-
-
-def _rel_to_volume_path(path: PurePosixPath) -> str:
-    posix = path.as_posix()
-    if not posix.startswith("/"):
-        posix = "/" + posix
-    return posix
-
-
-def _normalise_cache_filename(filename: str) -> str:
-    path = PurePosixPath(filename.strip().replace("\\", "/"))
-    if path.is_absolute() or ".." in path.parts:
-        raise ValueError("remote filename must be a relative path inside comfy-cache")
-    return path.as_posix()
-
-
-def _parse_local_path(raw_path: str) -> Path:
-    return Path(raw_path.strip().strip("\"'")).expanduser()
-
-
-def _windows_path_note(raw_path: str) -> str:
-    if "\\" not in raw_path:
-        return ""
-    return "Windows separators are accepted locally; cache paths are normalized to POSIX / paths."
-
-
-def nearby_directory_hint(text: str, *, limit: int = 5) -> str:
-    candidate = Path(text.strip().strip("\"'")).expanduser()
-    base = candidate if candidate.is_dir() else candidate.parent
-    if not str(base) or not base.exists() or not base.is_dir():
-        base = Path.cwd()
-    try:
-        directories = sorted(p.name for p in base.iterdir() if p.is_dir())[:limit]
-    except OSError:
-        return ""
-    if not directories:
-        return ""
-    return " Available folders: " + ", ".join(directories)
-
-
-def _project_path_candidates(*, include_files: bool = False) -> list[str]:
-    roots = [
-        Path.cwd(),
-        Path.cwd() / "workflows",
-        Path.cwd() / "local-models",
-    ]
-    candidates: list[str] = []
-    for root in roots:
-        if not root.exists():
-            continue
-        candidates.append(str(root))
-        try:
-            candidates.extend(
-                str(path)
-                for path in root.iterdir()
-                if include_files or path.is_dir()
-            )
-        except OSError:
-            continue
-    return sorted(dict.fromkeys(candidates))
-
-
-def _nearest_project_path(raw_path: str) -> Path | None:
-    needle = Path(raw_path.strip().strip("\"'")).name.lower()
-    if not needle:
-        return None
-    matches = [
-        Path(candidate)
-        for candidate in _project_path_candidates(include_files=True)
-        if _fuzzy_match(needle, Path(candidate).name.lower())
-    ]
-    files = [path for path in matches if path.is_file()]
-    return (files or matches or [None])[0]
 
 
 def _upload_to_cache(local_path: Path, cache_filename: str) -> bool:
@@ -244,7 +168,7 @@ def _upload_to_cache(local_path: Path, cache_filename: str) -> bool:
     try:
         volume = modal.Volume.from_name(CACHE_VOLUME, create_if_missing=True)
         with volume.batch_upload(force=True) as batch:
-            batch.put_file(str(local_path), _rel_to_volume_path(remote_rel))
+            batch.put_file(str(local_path), relative_volume_path(remote_rel))
     except Exception as e:
         print(f"  {R}Upload failed:{RST} {e}")
         return False
@@ -464,7 +388,7 @@ def _prompt_modal_setup_if_needed(cfg: Config) -> None:
         "[bold blue]Starting Modal setup. Complete the browser flow, then return here.[/bold blue]",
         style="blue",
     )
-    result = subprocess.run([sys.executable, "-m", "modal", "setup"], check=False)
+    result = subprocess.run(modal_command("setup"), check=False)
     if result.returncode == 0:
         print_status("[bold green]Modal setup finished. Refreshed status is shown below.[/bold green]", style="green")
     else:
@@ -558,74 +482,12 @@ def _configure_modal_secrets_menu(cfg: Config) -> None:
 
 # ── HuggingFace Auto-Detect ──
 
-
-def _parse_hf_input(raw: str) -> str:
-    raw = raw.strip().rstrip("/")
-    if raw.startswith("https://huggingface.co/"):
-        raw = raw.removeprefix("https://huggingface.co/")
-    parts = raw.split("/")
-    if len(parts) >= 2:
-        return "/".join(parts[:2])
-    return raw
-
-
 def _hf_list_files(repo_id: str) -> list[str] | None:
     try:
-        token = os.environ.get("HF_TOKEN")
-        response = requests.get(
-            f"https://huggingface.co/api/models/{quote(repo_id, safe='/')}",
-            params={"expand[]": "siblings"},
-            headers={"Authorization": f"Bearer {token}"} if token else None,
-            timeout=15,
-        )
-        response.raise_for_status()
-        siblings = response.json().get("siblings")
-        if siblings is None:
-            return None
-        return [item["rfilename"] for item in siblings]
-    except (requests.RequestException, ValueError, AttributeError, TypeError, KeyError) as e:
-        print(f"  {R}HF API failed:{RST} {e}")
+        return list_repo_files(repo_id)
+    except (requests.RequestException, ValueError, AttributeError, TypeError, KeyError) as exc:
+        print(f"  {R}HF API failed:{RST} {exc}")
         return None
-
-
-_MODEL_EXTENSIONS = {".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf", ".onnx"}
-
-
-def _is_model_file(filename: str) -> bool:
-    return Path(filename).suffix.lower() in _MODEL_EXTENSIONS
-
-
-def _guess_model_dir(filename: str) -> str:
-    lower = filename.lower()
-    path_parts = Path(filename).parts
-
-    dir_hints = {
-        "unet": "unet",
-        "transformer": "unet",
-        "text_encoder": "clip",
-        "clip": "clip",
-        "vae": "vae",
-        "lora": "loras",
-        "controlnet": "controlnet",
-        "embedding": "embeddings",
-        "upscale": "upscale_models",
-        "inswapper": "insightface",
-        "insightface": "insightface",
-        "facerestore": "facerestore_models",
-        "face_restore": "facerestore_models",
-        "gfpgan": "facerestore_models",
-        "codeformer": "facerestore_models",
-    }
-    for part in path_parts:
-        for hint, dir_name in dir_hints.items():
-            if hint in part.lower():
-                return dir_name
-
-    for hint, dir_name in dir_hints.items():
-        if hint in lower:
-            return dir_name
-
-    return "checkpoints"
 
 
 # ── CivitAI URL Resolution ──
@@ -706,12 +568,12 @@ def _add_hf_model(cfg: Config) -> None:
     if not raw:
         return
 
-    repo_id = _parse_hf_input(raw)
+    repo_id = parse_repo_id(raw)
     print(f"  {D}Repo:{RST} {W}{repo_id}{RST}")
 
     files = _hf_list_files(repo_id)
     if files is not None:
-        model_files = [f for f in files if _is_model_file(f)]
+        model_files = [f for f in files if is_model_file(f)]
         if not model_files:
             print(f"  {D}No model files found in repo.{RST}")
             return
@@ -734,12 +596,12 @@ def _add_hf_model(cfg: Config) -> None:
     if len(selected) > 1:
         bundle = questionary.text(
             "Bundle name (groups these models, optional):",
-            default=_slugify(repo_id.split("/")[-1]),
+            default=slugify(repo_id.split("/")[-1]),
             style=STYLE,
         ).ask() or None
 
     for filename in selected:
-        suggested_dir = _guess_model_dir(filename)
+        suggested_dir = guess_model_dir(filename)
         model_dir = questionary.select(
             f"Target dir for '{Path(filename).name}':",
             choices=VALID_MODEL_DIRS,
@@ -757,7 +619,7 @@ def _add_hf_model(cfg: Config) -> None:
 
         name_for_key = save_as or original_name
         name_for_key = Path(name_for_key).stem  # strip extension for key
-        default_key = _slugify(
+        default_key = slugify(
             f"{repo_id.split('/')[-1]}-{name_for_key}"
         )
         key = questionary.text("Config key:", default=default_key, style=STYLE).ask()
@@ -833,18 +695,18 @@ def _add_external_model(cfg: Config) -> None:
 def _add_local_model(cfg: Config) -> None:
     raw_path = questionary.path(
         "Local model file:",
-        get_paths=_project_path_candidates,
+        get_paths=project_path_candidates,
         style=STYLE,
     ).ask()
     if not raw_path:
         return
-    separator_note = _windows_path_note(raw_path)
+    separator_note = windows_separator_note(raw_path)
     if separator_note:
         console.print(f"  [dim]{separator_note}[/]")
 
-    local_path = _parse_local_path(raw_path)
+    local_path = parse_local_path(raw_path)
     if not local_path.exists() or not local_path.is_file():
-        suggestion = _nearest_project_path(raw_path)
+        suggestion = nearest_project_path(raw_path)
         if suggestion and suggestion.exists() and suggestion.is_file():
             if ask_confirm(
                 f"File not found. Did you mean {suggestion}?",
@@ -865,14 +727,14 @@ def _add_local_model(cfg: Config) -> None:
         if hint:
             console.print(f"  [dim]{hint}[/]")
         return
-    if not _is_model_file(local_path.name):
+    if not is_model_file(local_path.name):
         print(f"  {R}Unsupported model file extension:{RST} {local_path.suffix}")
         return
 
     model_dir = questionary.select(
         "Target directory:",
         choices=VALID_MODEL_DIRS,
-        default=_guess_model_dir(local_path.name),
+        default=guess_model_dir(local_path.name),
         style=STYLE,
     ).ask()
     if not model_dir:
@@ -898,14 +760,14 @@ def _add_local_model(cfg: Config) -> None:
         return
 
     try:
-        cache_filename = _normalise_cache_filename(cache_filename_input)
+        cache_filename = normalise_cache_filename(cache_filename_input)
     except ValueError as e:
         print(f"  {R}Invalid cache path:{RST} {e}")
         return
 
     bundle = questionary.text("Bundle name (optional):", style=STYLE).ask() or None
 
-    default_key = _slugify(Path(display_name).stem)
+    default_key = slugify(Path(display_name).stem)
     key = questionary.text("Config key:", default=default_key, style=STYLE).ask()
     if not key or key in cfg.models:
         print(f"  {R}Key '{key}' conflict or empty, skipping.{RST}")
@@ -945,7 +807,7 @@ def _add_snapshot_model(cfg: Config) -> None:
     if not raw:
         return
 
-    repo_id = _parse_hf_input(raw)
+    repo_id = parse_repo_id(raw)
 
     target_dir = questionary.text(
         "Target directory (absolute path):",
@@ -1011,7 +873,7 @@ def _list_models(cfg: Config) -> None:
             )
             if part
         ).lower()
-        if not _fuzzy_match(needle, haystack):
+        if not fuzzy_match(needle, haystack):
             continue
         bundles[spec.bundle].append((key, spec))
 
@@ -1263,7 +1125,7 @@ def _add_plugin(cfg: Config) -> None:
         if not node_id:
             return
         name = questionary.text("Display name (optional):", style=STYLE).ask() or None
-        key = _slugify(node_id)
+        key = slugify(node_id)
         cfg.plugins[key] = PluginSpec(node_id=node_id, name=name)
         print(f"  {G}+{RST} {W}{key}{RST}: {D}{node_id}{RST}")
     else:
@@ -1274,7 +1136,7 @@ def _add_plugin(cfg: Config) -> None:
         # Derive key from last two path segments (owner/repo)
         parts = repo_url.rstrip("/").split("/")
         repo_slug = "-".join(parts[-2:]) if len(parts) >= 2 else parts[-1]
-        default_key = _slugify(repo_slug)
+        default_key = slugify(repo_slug)
         name = questionary.text("Display name (optional):", style=STYLE).ask() or None
         key = questionary.text("Config key:", default=default_key, style=STYLE).ask()
         if not key:
@@ -1306,7 +1168,7 @@ def _list_plugins(cfg: Config) -> None:
         source = spec.repo or spec.node_id or "local"
         name = spec.name or key
         haystack = f"{key} {name} {source}".lower()
-        if not _fuzzy_match(needle, haystack):
+        if not fuzzy_match(needle, haystack):
             continue
         branch = "main" if spec.repo else "registry"
         console.print(f"  [bold white]{key:<25}[/] [dim]{source}[/]")
@@ -1340,10 +1202,7 @@ def _remove_plugins(cfg: Config) -> None:
 
 
 def _modal_env(gpu_choice: str | None = None) -> dict[str, str]:
-    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
-    if gpu_choice:
-        env[WEB_UI_GPU_ENV] = gpu_choice
-    return env
+    return utf8_env(**({WEB_UI_GPU_ENV: gpu_choice} if gpu_choice else {}))
 
 
 def _choose_web_gpu(default: str = DEFAULT_WEB_UI_GPU, *, preference_key: str = "last_web_gpu") -> str:
@@ -1385,7 +1244,7 @@ def _confirm_remote_action(
 
 
 def _run_prepare_for_preflight(reason: str) -> None:
-    cmd = ["modal", "run", "server/app.py::prepare"]
+    cmd = modal_command("run", "server/app.py::prepare")
     if not _confirm_remote_action(
         "[bold yellow]Prepare Models Pre-flight[/bold yellow]",
         cmd,
