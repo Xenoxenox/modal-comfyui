@@ -25,7 +25,7 @@ except ImportError:
     print("questionary is required. Run: uv sync")
     raise
 
-from config.loader import ConfigError, load_config, save_config
+from config.loader import ConfigError, load_config, save_config, validate_model
 from scripts.huggingface import guess_model_dir, is_model_file, list_repo_files, parse_repo_id
 from scripts.modal_command import modal_command, utf8_env
 from scripts.local_paths import (
@@ -47,8 +47,12 @@ from config.schema import (
     PluginSpec,
     VALID_MODEL_DIRS,
 )
-from scripts.manage_volumes import volume_management_menu
-from scripts.manage_volumes import list_prepared_model_files, remove_volume_model_files
+from scripts.manage_volumes import (
+    PreparedModelFile,
+    list_prepared_model_files,
+    remove_volume_model_files,
+    volume_management_menu,
+)
 from scripts.billing import print_exit_summary
 from scripts.modal_status import (
     ExpectedModalSecret,
@@ -127,12 +131,25 @@ class ModalSecretStatus:
 
 
 def _ensure_config() -> Config:
-    if not CONFIG_PATH.exists():
+    while not CONFIG_PATH.exists():
         print(f"  {D}config.toml not found.{RST}")
-        if ask_confirm("Create empty config.toml?", default=True):
+        action = ask_select(
+            "Config setup:",
+            choices=[
+                "Restore models from comfy-cache",
+                "Create empty config.toml",
+                "Exit",
+            ],
+            default="Restore models from comfy-cache",
+        )
+        if action == "Restore models from comfy-cache":
+            cfg = Config(models={}, plugins={})
+            if _import_models_from_volume(cfg):
+                save_config(cfg, CONFIG_PATH)
+        elif action == "Create empty config.toml":
             save_config(Config(models={}, plugins={}), CONFIG_PATH)
         else:
-            sys.exit(1)
+            raise SystemExit(1)
     return load_config(CONFIG_PATH)
 
 
@@ -944,6 +961,106 @@ def _target_matches_config(target_path: str, suffixes: set[str]) -> bool:
     return any(target_path.endswith(suffix) for suffix in suffixes)
 
 
+
+def _model_spec_from_prepared(model: PreparedModelFile) -> ModelSpec:
+    cache_path = PurePosixPath(model.cache_path)
+    target_path = PurePosixPath(model.target_path)
+    try:
+        cache_relative = cache_path.relative_to("/cache")
+    except ValueError as exc:
+        raise ValueError("cache path must be below /cache") from exc
+    try:
+        target_relative = target_path.relative_to("/root/comfy/ComfyUI/models")
+    except ValueError as exc:
+        raise ValueError(
+            "target path must be below /root/comfy/ComfyUI/models"
+        ) from exc
+
+    if not cache_relative.parts or ".." in cache_relative.parts:
+        raise ValueError("cache path must identify an item below /cache")
+    if len(target_relative.parts) < 2 or ".." in target_relative.parts:
+        raise ValueError("target path must identify a model directory and link name")
+
+    target_name = PurePosixPath(*target_relative.parts[1:]).as_posix()
+    spec = ModelSpec(
+        source=ModelSource.LOCAL,
+        filename=cache_relative.as_posix(),
+        model_dir=target_relative.parts[0],
+        save_as=target_name if target_name != cache_relative.name else None,
+    )
+    validate_model("<volume-import>", spec)
+    return spec
+
+
+def _merge_prepared_models(
+    cfg: Config,
+    prepared: list[PreparedModelFile],
+) -> tuple[list[str], int, list[str]]:
+    imported: list[str] = []
+    already_configured = 0
+    invalid: list[str] = []
+    target_suffixes = _configured_model_target_suffixes(cfg)
+
+    for model in sorted(prepared, key=lambda item: (item.target_path, item.cache_path)):
+        try:
+            spec = _model_spec_from_prepared(model)
+        except (ConfigError, ValueError) as exc:
+            invalid.append(
+                f"{model.cache_path or '<empty>'} -> "
+                f"{model.target_path or '<empty>'}: {exc}"
+            )
+            continue
+
+        if _target_matches_config(model.target_path, target_suffixes):
+            already_configured += 1
+            continue
+
+        base_key = slugify(PurePosixPath(model.display_name).stem) or "imported-model"
+        key = base_key
+        suffix = 2
+        while key in cfg.models:
+            key = f"{base_key}-{suffix}"
+            suffix += 1
+        cfg.models[key] = spec
+        imported.append(key)
+        target_suffix = _model_target_suffix(spec)
+        if target_suffix is not None:
+            target_suffixes.add(target_suffix)
+
+    return imported, already_configured, invalid
+
+
+def _import_models_from_volume(cfg: Config) -> int:
+    try:
+        prepared = list_prepared_model_files(include_sizes=False)
+    except Exception as exc:
+        print_status(
+            "Could not read comfy-cache prepared model manifest: "
+            f"{sanitize_modal_error(str(exc))}",
+            style="red",
+        )
+        return 0
+
+    if not prepared:
+        print_status("No prepared model manifest entries found.", style="yellow")
+        return 0
+
+    imported, already_configured, invalid = _merge_prepared_models(cfg, prepared)
+    for message in invalid:
+        console.print(f"[yellow]Skipped invalid model:[/] {message}")
+    print_result_panel(
+        "Model Import Complete",
+        [
+            ("Imported", len(imported)),
+            ("Already configured", already_configured),
+            ("Invalid", len(invalid)),
+            ("Volume", CACHE_VOLUME),
+        ],
+        border_style="green" if imported else "yellow",
+    )
+    return len(imported)
+
+
 def _orphan_prepared_model_files(cfg: Config, *, include_sizes: bool = True) -> list:
     suffixes = _configured_model_target_suffixes(cfg)
     try:
@@ -1426,6 +1543,7 @@ def _models_menu(cfg: Config) -> None:
                 "Add model (CivitAI / External URL)",
                 "Add model (Local upload)",
                 "Add model (HF Snapshot)",
+                "Import models from comfy-cache",
                 "List models",
                 "Manage bundles",
                 "Remove model",
@@ -1444,6 +1562,8 @@ def _models_menu(cfg: Config) -> None:
             _add_local_model(cfg)
         elif "Snapshot" in action:
             _add_snapshot_model(cfg)
+        elif action == "Import models from comfy-cache":
+            _import_models_from_volume(cfg)
         elif "List" in action:
             _list_models(cfg)
         elif "Manage bundles" in action:
