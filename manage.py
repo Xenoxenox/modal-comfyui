@@ -25,12 +25,6 @@ except ImportError:
     print("questionary is required. Run: uv sync")
     raise
 
-from config.intake import (
-    build_external_spec,
-    build_huggingface_spec,
-    build_local_spec,
-    build_snapshot_spec,
-)
 from config.loader import ConfigError, load_config, save_config
 from scripts.huggingface import guess_model_dir, is_model_file, list_repo_files, parse_repo_id
 from scripts.modal_command import modal_command, utf8_env
@@ -630,17 +624,14 @@ def _add_hf_model(cfg: Config) -> None:
             print(f"  {R}Key '{key}' already exists, skipping.{RST}")
             continue
 
-        try:
-            spec = build_huggingface_spec(
-                repo_id,
-                filename,
-                model_dir,
-                save_as=save_as,
-                bundle=bundle,
-            )
-        except ConfigError as e:
-            print(f"  {R}Invalid model: {e}{RST}")
-            return
+        spec = ModelSpec(
+            source=ModelSource.HUGGINGFACE,
+            repo_id=repo_id,
+            filename=filename,
+            model_dir=model_dir,
+            save_as=save_as,
+            bundle=bundle,
+        )
 
         cfg.models[key] = spec
         display_name = save_as or original_name
@@ -671,22 +662,19 @@ def _add_external_model(cfg: Config) -> None:
 
     bundle = questionary.text("Bundle name (optional):", style=STYLE).ask() or None
 
-    default_key = _slugify(Path(filename).stem)
+    default_key = slugify(Path(filename).stem)
     key = questionary.text("Config key:", default=default_key, style=STYLE).ask()
     if not key or key in cfg.models:
         print(f"  {R}Key '{key}' conflict or empty, skipping.{RST}")
         return
 
-    try:
-        spec = build_external_spec(
-            url,
-            filename,
-            model_dir,
-            bundle=bundle,
-        )
-    except ConfigError as e:
-        print(f"  {R}Invalid model: {e}{RST}")
-        return
+    spec = ModelSpec(
+        source=ModelSource.EXTERNAL,
+        url=url,
+        filename=filename,
+        model_dir=model_dir,
+        bundle=bundle,
+    )
 
     cfg.models[key] = spec
     print(f"  {G}+{RST} {W}{key}{RST}: {D}{url} → {model_dir}/{filename}{RST}")
@@ -781,18 +769,14 @@ def _add_local_model(cfg: Config) -> None:
     if not ask_confirm("Upload now?", default=True):
         return
 
+    spec = ModelSpec(
+        source=ModelSource.LOCAL,
+        filename=cache_filename,
+        model_dir=model_dir,
+        save_as=save_as,
+        bundle=bundle,
+    )
     if not _upload_to_cache(local_path, cache_filename):
-        return
-
-    try:
-        spec = build_local_spec(
-            cache_filename,
-            model_dir,
-            save_as=save_as,
-            bundle=bundle,
-        )
-    except ConfigError as e:
-        print(f"  {R}Invalid model: {e}{RST}")
         return
 
     cfg.models[key] = spec
@@ -817,17 +801,17 @@ def _add_snapshot_model(cfg: Config) -> None:
     if not target_dir:
         return
 
-    default_key = _slugify(repo_id.split("/")[-1])
+    default_key = slugify(repo_id.split("/")[-1])
     key = questionary.text("Config key:", default=default_key, style=STYLE).ask()
     if not key or key in cfg.models:
         print(f"  {R}Key '{key}' conflict or empty, skipping.{RST}")
         return
 
-    try:
-        spec = build_snapshot_spec(repo_id, target_dir)
-    except ConfigError as e:
-        print(f"  {R}Invalid model: {e}{RST}")
-        return
+    spec = ModelSpec(
+        source=ModelSource.HUGGINGFACE_SNAPSHOT,
+        repo_id=repo_id,
+        target_dir=target_dir,
+    )
 
     cfg.models[key] = spec
     print(f"  {G}+{RST} {W}{key}{RST}: {D}snapshot {repo_id} → {target_dir}{RST}")
