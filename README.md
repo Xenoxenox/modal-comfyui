@@ -176,7 +176,7 @@ This project supports **two layers** of custom nodes that complement each other:
 | Layer | Where declared | Installed at | Storage | Survives restart |
 |-------|---------------|-------------|---------|------------------|
 | **Blessed** | `config.toml` `[plugins.*]` | Image build time (`comfy node install`) | Baked into image | Always (part of image) |
-| **Experimental** | ComfyUI Manager UI | Runtime (Manager → Volume) | Modal Volume `comfy-cache` | Yes (symlink → Volume) |
+| **Experimental** | ComfyUI Manager UI | Runtime (Manager → Volume) | Modal Volume `comfy-cache:/cache/custom_nodes` | Yes (Volume) |
 
 The two layers are stacked so Manager-installed nodes never collide with
 baked-in Blessed nodes. Details below.
@@ -190,9 +190,8 @@ image at build time. The pipeline:
 config.toml [plugins.<name>]
   → to_legacy() takes repo or node_id (loader.py:270)
   → image build: comfy node install <id> (app.py:421)
-  → installed into image custom_nodes/
-  → runtime: _ensure_experimental_nodes_dir() renames custom_nodes/ → blessed_custom_nodes/
-  → scanned by extra_model_paths.yaml
+  → installed into the image's custom_nodes/
+  → scanned by ComfyUI's built-in custom_nodes path (nothing to do at runtime)
 ```
 
 **Two ways to declare a Blessed Node:**
@@ -222,17 +221,23 @@ After editing `config.toml`, you **must rebuild the image**. The next
 #### Experimental Nodes（运行时安装）
 
 Nodes installed through ComfyUI Manager UI at runtime land in Modal Volume
-`comfy-cache` under `/cache/custom_nodes/`. A symlink created at container
-startup makes them visible to ComfyUI:
+`comfy-cache` under `/cache/custom_nodes/`, which the image-baked
+`extra_model_paths.yaml` registers as the **default** `custom_nodes` path:
 
-```
-Manager install → /root/comfy/ComfyUI/custom_nodes/<node>
-                     ↓ symlink (created by _ensure_experimental_nodes_dir())
-                  /cache/custom_nodes/<node>  ← Modal Volume, persistent
+```yaml
+volume-nodes:
+  base_path: /cache
+  custom_nodes: custom_nodes
+  is_default: true
 ```
 
-This means Experimental nodes survive app stop/restart and cold starts —
-validated through full-cycle Chrome DevTools MCP testing.
+`is_default: true` is what places the Volume at
+`folder_paths.get_folder_paths("custom_nodes")[0]` — the index ComfyUI-Manager
+installs into. The image's own `custom_nodes/` directory is registered by
+ComfyUI itself, stays untouched, and is still scanned, so Blessed and
+Experimental nodes load side by side with no symlink and no runtime rename.
+
+This means Experimental nodes survive app stop/restart and cold starts.
 
 #### Promoting Experimental → Blessed
 
@@ -243,7 +248,7 @@ To promote a Manager-installed node to Blessed:
    cd /cache/custom_nodes/<node-dir> && git remote get-url origin
    ```
 2. Add a `[plugins.<name>]` entry in `config.toml` with the `repo` URL.
-3. Rebuild the image — the node will now be baked into `blessed_custom_nodes/`.
+3. Rebuild the image — the node will now be baked into the image's `custom_nodes/`.
 4. The old Experimental copy in the Volume is **not** auto-deleted. Remove it
    manually via `python -m scripts.manage_volumes` to avoid duplicate loading
    (see `config.toml.example` lines 97–102).

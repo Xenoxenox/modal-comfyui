@@ -3,20 +3,17 @@ from __future__ import annotations
 import datetime as dt
 import dataclasses
 import json
-import os
 import subprocess
-import sys
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from rich import box
-from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from scripts.modal_command import modal_command
 from scripts.modal_status import sanitize_modal_error
-
-console = Console()
+from scripts.tui import console
 
 
 @dataclasses.dataclass(frozen=True)
@@ -52,17 +49,7 @@ def _billing_command_prefix() -> list[str] | None:
     if _billing_command_cache is not None:
         return None if _billing_command_cache is False else list(_billing_command_cache)
 
-    candidates = [["modal"]]
-    current_python = [sys.executable, "-m", "modal"]
-    if current_python not in candidates:
-        candidates.append(current_python)
-
-    scripts_dir = os.path.dirname(sys.executable)
-    venv_modal = os.path.join(scripts_dir, "modal.exe" if os.name == "nt" else "modal")
-    if os.path.exists(venv_modal):
-        venv_candidate = [venv_modal]
-        if venv_candidate not in candidates:
-            candidates.append(venv_candidate)
+    candidates = [modal_command(), ["modal"]]
 
     for candidate in candidates:
         if _modal_command_supports_billing(candidate):
@@ -75,7 +62,7 @@ def _billing_command_prefix() -> list[str] | None:
 
 def current_modal_profile() -> str | None:
     try:
-        result = _run_text([sys.executable, "-m", "modal", "profile", "current"], timeout=5)
+        result = _run_text(modal_command("profile", "current"), timeout=5)
     except (OSError, subprocess.SubprocessError):
         return None
     if result.returncode != 0:

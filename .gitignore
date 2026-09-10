@@ -15,6 +15,7 @@ build/
 dist/
 wheels/
 *.egg-info
+.pytest_cache/
 
 # Virtual environments
 .venv/
@@ -54,7 +55,3 @@ output/
 .ref/
 
 config.toml
-
-tests/
-CONTEXT.md
-docs/

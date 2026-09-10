@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tomllib
+from dataclasses import fields
 from pathlib import Path
 
 from config.schema import (
@@ -91,10 +92,7 @@ def _parse_model(key: str, data: dict) -> ModelSpec:
             f"models.{key}: invalid source={source_str!r}, must be one of: {valid}"
         )
 
-    known_fields = {
-        "source", "repo_id", "filename", "model_dir",
-        "save_as", "target_dir", "url", "bundle",
-    }
+    known_fields = {field.name for field in fields(ModelSpec)}
     unknown = set(data.keys()) - known_fields
     if unknown:
         import warnings

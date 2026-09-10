@@ -18,11 +18,11 @@ from contextlib import suppress
 from urllib import request as urlrequest
 
 from rich import box
-from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 
+from scripts.modal_command import modal_command, utf8_env
 from scripts.modal_run_info import (
     modal_app_logs_command,
     modal_app_stop_command,
@@ -31,6 +31,7 @@ from scripts.modal_run_info import (
     shell_command_text,
 )
 from scripts.modal_status import sanitize_modal_error
+from scripts.tui import console
 from scripts.web_ui_mode import (
     CONFIG_PROFILE_ENV,
     DEFAULT_WEB_UI_GPU,
@@ -42,7 +43,6 @@ from scripts.web_ui_mode import (
     mode_from_args,
 )
 
-console = Console()
 IDLE_TIMEOUT = int(os.getenv("SERVE_IDLE_TIMEOUT", "120"))
 
 PHASE_SIGNALS = [
@@ -74,18 +74,20 @@ ERROR_SIGNALS = [
     "Traceback (most recent call last)",
     "Exception:",
 ]
+
+
 REMOTE_LOG_ERRORS = {"Traceback (most recent call last)", "Exception:"}
 RECOVERABLE_RUNTIME_ERRORS = {"Connection refused"}
 
 
-def _error_signal(line: str, *, service_ready: bool) -> str | None:
-    for err in ERROR_SIGNALS:
-        if err in line:
-            if err in REMOTE_LOG_ERRORS:
+def _error_signal(line: str, *, service_healthy: bool) -> str | None:
+    for signal in ERROR_SIGNALS:
+        if signal in line:
+            if signal in REMOTE_LOG_ERRORS:
                 return None
-            if service_ready and err in RECOVERABLE_RUNTIME_ERRORS:
+            if service_healthy and signal in RECOVERABLE_RUNTIME_ERRORS:
                 return None
-            return err
+            return signal
     return None
 
 
@@ -101,8 +103,8 @@ def _probe_url(url: str, retries: int = 5, delay: float = 3.0) -> bool:
     return False
 
 
-def _idle_timeout_expired(last_change: float, now: float, timeout: int, *, service_ready: bool) -> bool:
-    return not service_ready and now - last_change > timeout
+def _startup_stalled(last_change: float, now: float, timeout: int, *, healthy: bool) -> bool:
+    return not healthy and now - last_change > timeout
 
 
 def _start_output_watcher(url: str) -> subprocess.Popen[str] | None:
@@ -112,11 +114,7 @@ def _start_output_watcher(url: str) -> subprocess.Popen[str] | None:
         with watch_log_path.open("w", encoding="utf-8", errors="replace") as watch_log:
             proc = subprocess.Popen(
                 cmd,
-                env={
-                    **os.environ,
-                    "PYTHONUTF8": "1",
-                    "PYTHONIOENCODING": "utf-8",
-                },
+                env=utf8_env(),
                 stdout=watch_log,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -135,11 +133,11 @@ def _start_output_watcher(url: str) -> subprocess.Popen[str] | None:
 
 
 def stop_old_apps(modal_env: str | None = None):
-    list_cmd = [sys.executable, "-m", "modal", "app", "list", *modal_env_args(modal_env)]
+    list_cmd = modal_command("app", "list", *modal_env_args(modal_env))
     result = subprocess.run(
         list_cmd,
         capture_output=True, text=True, encoding="utf-8", errors="replace",
-        env={**os.environ, "PYTHONUTF8": "1"},
+        env=utf8_env(),
     )
     for line in result.stdout.splitlines():
         if "ephemeral" in line:
@@ -147,7 +145,7 @@ def stop_old_apps(modal_env: str | None = None):
             if app_id:
                 print(f"Stopping old app: {app_id}")
                 subprocess.run(
-                    [sys.executable, "-m", "modal", "app", "stop", *modal_env_args(modal_env), app_id],
+                    modal_command("app", "stop", *modal_env_args(modal_env), app_id),
                     capture_output=True,
                 )
     time.sleep(5)
@@ -260,14 +258,13 @@ def main():
     ensure_modal_environment(modal_env)
     stop_old_apps(modal_env)
 
-    env = {
-        **os.environ,
-        "PYTHONUTF8": "1",
-        "PYTHONIOENCODING": "utf-8",
-        WEB_UI_GPU_ENV: args.gpu,
-        CONFIG_PROFILE_ENV: profile,
-        **empty_mode_env(profile),
-    }
+    env = utf8_env(
+        **{
+            WEB_UI_GPU_ENV: args.gpu,
+            CONFIG_PROFILE_ENV: profile,
+            **empty_mode_env(profile),
+        }
+    )
     log_path = modal_log_path("modal_serve")
 
     env_label = modal_env or "profile default"
@@ -280,7 +277,7 @@ def main():
         "before ComfyUI is reachable.[/dim]"
     )
     proc = subprocess.Popen(
-        [sys.executable, "-m", "modal", "serve", *modal_env_args(modal_env), "server/ui.py"],
+        modal_command("serve", *modal_env_args(modal_env), "server/ui.py"),
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -294,7 +291,8 @@ def main():
     seen_text_parts: list[str] = []
     printed_run_info = False
     printed_web_url = False
-    opened_url = False
+    url_seen = False
+    healthy = False
     watch_proc: subprocess.Popen[str] | None = None
     last_phase = ""
 
@@ -308,11 +306,11 @@ def main():
                 except queue.Empty:
                     if proc.poll() is not None:
                         return
-                    if _idle_timeout_expired(
+                    if _startup_stalled(
                         last_change,
                         time.monotonic(),
                         IDLE_TIMEOUT,
-                        service_ready=opened_url,
+                        healthy=healthy,
                     ):
                         console.print(
                             f"\n[bold yellow]No startup log progress for {IDLE_TIMEOUT}s[/bold yellow] "
@@ -337,7 +335,7 @@ def main():
                         console.print(f"[dim]{phase}[/]")
                         last_phase = phase
 
-                    err = _error_signal(line, service_ready=opened_url)
+                    err = _error_signal(line, service_healthy=healthy)
                     if err:
                         console.print(f"\n[bold red]Error detected:[/] {err!r}")
                         console.print(f"[dim]Check log: {log_path}[/dim]")
@@ -345,30 +343,30 @@ def main():
                         return
 
                     run_info = parse_modal_run_info(text)
-                    if run_info and not printed_run_info and (
-                        "app_id" in run_info or "web_url" in run_info
+                    if run_info and ("app_id" in run_info or "web_url" in run_info) and (
+                        not printed_run_info
+                        or ("web_url" in run_info and not printed_web_url)
                     ):
                         _print_run_info(run_info, log_path, proc.pid)
                         printed_run_info = True
-                        if "web_url" not in run_info:
+                        if "web_url" in run_info:
+                            printed_web_url = True
+                        else:
                             console.print("[dim]Waiting for ComfyUI URL...[/dim]")
 
-                    if "web_url" in run_info and not printed_web_url:
-                        _print_run_info(run_info, log_path, proc.pid)
-                        printed_web_url = True
-
-                    if "web_url" in run_info and not opened_url:
+                    if "web_url" in run_info and not url_seen:
                         url = run_info["web_url"]
                         if watch_proc is None and not args.no_watch:
                             watch_proc = _start_output_watcher(url)
                         if not args.no_open:
                             with suppress(Exception):
                                 webbrowser.open(url)
-                        if _probe_url(url):
+                        healthy = _probe_url(url)
+                        if healthy:
                             console.print("[bold green]Health check passed[/bold green]")
                         else:
                             console.print("[bold yellow]Health check failed; service may still be starting[/bold yellow]")
-                        opened_url = True
+                        url_seen = True
     except KeyboardInterrupt:
         _stop_process(proc, interrupted=True)
         return

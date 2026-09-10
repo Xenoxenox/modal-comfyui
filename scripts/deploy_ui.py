@@ -7,10 +7,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import os
 import subprocess
 import sys
 
+from scripts.modal_command import modal_command, utf8_env
 from scripts.web_ui_mode import (
     CONFIG_PROFILE_ENV,
     WEB_UI_GPU_ENV,
@@ -32,18 +32,17 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     profile, modal_env = mode_from_args(args)
     ensure_modal_environment(modal_env)
-    env = {
-        **os.environ,
-        "PYTHONUTF8": "1",
-        "PYTHONIOENCODING": "utf-8",
-        WEB_UI_GPU_ENV: args.gpu,
-        CONFIG_PROFILE_ENV: profile,
-        **empty_mode_env(profile),
-    }
+    env = utf8_env(
+        **{
+            WEB_UI_GPU_ENV: args.gpu,
+            CONFIG_PROFILE_ENV: profile,
+            **empty_mode_env(profile),
+        }
+    )
     env_label = modal_env or "profile default"
     print(f"Deploying ComfyUI Web UI on GPU {args.gpu} profile={profile} env={env_label}")
     subprocess.run(
-        ["modal", "deploy", *modal_env_args(modal_env), "server/ui.py"],
+        modal_command("deploy", *modal_env_args(modal_env), "server/ui.py"),
         env=env,
         check=True,
     )

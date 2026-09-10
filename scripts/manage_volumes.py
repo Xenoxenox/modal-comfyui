@@ -33,6 +33,8 @@ except ImportError:
 from rich.table import Table
 from rich.tree import Tree
 
+from server.model_manifest import MANIFEST_FILENAME
+from scripts.output_download import download_volume_session
 from scripts.tui import (
     STYLE,
     ask_confirm,
@@ -41,25 +43,20 @@ from scripts.tui import (
     print_banner,
     print_result_panel,
     print_status,
+    source_badge,
 )
-from scripts.output_download import download_volume_session
+from scripts.volume_fs import entry_type, join_volume_path, read_volume_file
 
 CACHE_VOLUME = "comfy-cache"
 OUTPUT_VOLUME = "comfy-output"
 KNOWN_VOLUMES = (CACHE_VOLUME, OUTPUT_VOLUME)
-MODEL_LINK_MANIFEST = "/.modal-comfyui-model-links.json"
+MODEL_LINK_MANIFEST = f"/{MANIFEST_FILENAME}"
 SESSION_ID_RE = re.compile(r"^\d{8}-\d{6}-[0-9a-fA-F]{6,}$")
 FREE_TIER_REFERENCE_BYTES = 1024**4
 USAGE_CACHE_PATH = Path(".cache") / "modal-comfyui" / "volume_usage.json"
 MODEL_SIZE_CACHE_PATH = Path(".cache") / "modal-comfyui" / "model_file_sizes.json"
 DELETED_MODEL_CACHE_PATH = Path(".cache") / "modal-comfyui" / "deleted_model_files.json"
 
-SOURCE_BADGES = {
-    "huggingface": "[white on blue] HU [/]",
-    "huggingface_snapshot": "[black on cyan] SN [/]",
-    "external": "[white on magenta] EX [/]",
-    "local": "[black on green] LO [/]",
-}
 
 
 @dataclass(frozen=True)
@@ -97,21 +94,6 @@ def _volume_description(volume_name: str) -> str:
     return "custom Modal volume"
 
 
-def _entry_type(entry: Any) -> str:
-    raw_type = getattr(entry, "type", None)
-    if raw_type is not None:
-        value = getattr(raw_type, "value", raw_type)
-        if value == 1:
-            return "file"
-        if value == 2:
-            return "dir"
-        name = getattr(raw_type, "name", None)
-        if name:
-            return str(name).lower()
-        return str(raw_type)
-    if getattr(entry, "is_dir", False):
-        return "dir"
-    return "file"
 
 
 def _entry_size(entry: Any) -> int | None:
@@ -157,13 +139,7 @@ def _cache_to_volume_path(cache_path: str) -> str:
 
 
 def _read_volume_text(volume_name: str, path: str) -> str:
-    vol = modal.Volume.from_name(volume_name)
-    data = vol.read_file(path)
-    if isinstance(data, bytes):
-        return data.decode("utf-8")
-    if isinstance(data, str):
-        return data
-    return b"".join(data).decode("utf-8")
+    return read_volume_file(modal.Volume.from_name(volume_name), path).decode("utf-8")
 
 
 def _load_model_manifest() -> list[dict[str, Any]]:
@@ -197,20 +173,6 @@ def _compact_cache_path(cache_path: str) -> str:
     return path.name or cache_path
 
 
-def _volume_file_size(volume_name: str, path: str) -> int | None:
-    volume_path = PurePosixPath(path)
-    parent = volume_path.parent.as_posix()
-    if parent == ".":
-        parent = "/"
-    name = volume_path.name
-    try:
-        entries = list_volume_entries(volume_name, parent)
-    except Exception:
-        return None
-    for entry in entries:
-        if PurePosixPath(entry.path).name == name and entry.type != "dir":
-            return entry.size
-    return None
 
 
 def _read_model_size_cache() -> dict[str, Any]:
@@ -358,7 +320,12 @@ def print_model_link_tree() -> bool:
     for model_dir in sorted(grouped):
         branch = root.add(f"[bold cyan]{model_dir}/[/]")
         for item in sorted(grouped[model_dir], key=lambda x: x.display_name):
-            badge = SOURCE_BADGES.get(item.source, "[white on grey23] ?? [/]")
+            badge = source_badge({
+                "huggingface": "HU",
+                "huggingface_snapshot": "SN",
+                "external": "EX",
+                "local": "LO",
+            }.get(item.source, "??"))
             size = f" [bold]{_format_size(item.size)}[/]" if item.size is not None else ""
             branch.add(
                 f"{badge} [white]{item.display_name}[/]{size} "
@@ -397,19 +364,13 @@ def list_volume_entries(volume_name: str, path: str = "/") -> list[VolumeEntry]:
         entries.append(
             VolumeEntry(
                 path=str(entry.path),
-                type=_entry_type(entry),
+                type=entry_type(entry),
                 size=_entry_size(entry),
             )
         )
     return entries
 
 
-def _join_volume_path(parent: str, child: str) -> str:
-    if child.startswith("/"):
-        return child
-    if parent == "/":
-        return f"/{child}"
-    return f"{parent.rstrip('/')}/{PurePosixPath(child).name}"
 
 
 def calculate_volume_usage(
@@ -442,12 +403,12 @@ def calculate_volume_usage(
             if entry.type == "dir":
                 dir_count += 1
                 if recursive:
-                    stack.append(_join_volume_path(current, entry.path))
+                    stack.append(join_volume_path(current, entry.path))
                 continue
             file_count += 1
             size = entry.size or 0
             total_size += size
-            sizes_by_volume_path[_join_volume_path(current, entry.path)] = size
+            sizes_by_volume_path[join_volume_path(current, entry.path)] = size
 
         if not recursive:
             break
@@ -643,7 +604,7 @@ def _output_session_dirs(vol: Any) -> list[str]:
     entries = []
     for entry in vol.listdir("/"):
         path = str(entry.path).strip("/")
-        if _entry_type(entry) == "dir" and SESSION_ID_RE.match(path):
+        if entry_type(entry) == "dir" and SESSION_ID_RE.match(path):
             entries.append(path)
     return sorted(entries, reverse=True)
 
