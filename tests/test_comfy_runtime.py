@@ -112,6 +112,31 @@ def test_supervisor_restart_is_a_noop_after_exit(monkeypatch: pytest.MonkeyPatch
     assert not process.terminated
 
 
+def test_supervisor_relaunches_through_launch_comfy_after_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _StopSupervising(Exception):
+        pass
+
+    launched: list[tuple[str, int]] = []
+
+    def fake_launch(host: str, port: int, *args, **kwargs):
+        if len(launched) == 2:
+            raise _StopSupervising
+        launched.append((host, port))
+        return _FakeProcess(returncode=1)
+
+    monkeypatch.setattr(comfy_runtime, "launch_comfy", fake_launch)
+    monkeypatch.setattr(comfy_runtime.threading, "Thread", _NoThread)
+
+    supervisor = ComfySupervisor("127.0.0.1", 8188, restart_delay=0)
+    supervisor.start()
+    with pytest.raises(_StopSupervising):
+        supervisor._supervise()
+
+    assert launched == [("127.0.0.1", 8188), ("127.0.0.1", 8188)]
+
+
 def test_cache_paths_live_under_the_cache_mount() -> None:
     assert CACHE_CUSTOM_NODES.as_posix() == "/cache/custom_nodes"
     assert CACHE_USER_DIR.as_posix() == "/cache/user"
