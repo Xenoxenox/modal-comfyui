@@ -32,6 +32,7 @@ workflows/
 logs/
 !logs/.gitkeep
 modal_serve.log
+*.har
 
 # Tooling
 .cache/

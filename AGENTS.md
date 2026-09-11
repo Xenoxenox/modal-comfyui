@@ -63,3 +63,180 @@ This file provides guidance to agents when working with code in this repository.
 - Model downloads always symlink from cache volume — never copy weight files.
 - The `client/` directory runs locally (your machine); the `server/` directory runs inside Modal containers. Do not mix these execution contexts.
 - Do not change Web UI back to direct ComfyUI port `8000`; keep nginx in front unless replacing the workflow userdata `%2F` fix with an equivalent tested solution.
+
+## Detailed Project Guidance
+
+### Project Overview
+
+Run ComfyUI on Modal in two modes:
+
+- **Web UI** — browser-based workflow design through nginx.
+- **Headless inference** — the local client submits a JSON workflow, Modal executes it on GPU, and results are downloaded locally.
+
+The local machine orchestrates requests; GPU work runs inside Modal containers.
+
+### Modal Command Reference
+
+```bash
+powershell -ExecutionPolicy Bypass -File .\setup.ps1
+bash ./setup.sh
+uv sync
+uv run modal setup
+python manage.py
+python serve.py --gpu L4
+python serve.py --empty --gpu T4
+modal serve server/ui.py
+python -m scripts.deploy_ui --gpu L4
+python -m scripts.deploy_ui --empty --gpu T4
+python -m client.infer
+python -m client.watch <url>
+python -m scripts.manage_volumes
+```
+
+`serve.py` is preferred over direct `modal serve`: it handles UTF-8 output,
+stuck ephemeral apps, local logs, Modal run metadata, health probing, and the
+local output watcher.
+
+Before any Modal command, ensure the private config exists:
+
+```bash
+cp config.toml.example config.toml
+```
+
+`workflow_api.json` is optional. If present, the image installs its workflow
+custom-node dependencies with `comfy node install-deps`.
+
+### Empty Workflow-Editing Mode
+
+```bash
+python serve.py --empty --gpu T4
+python -m scripts.deploy_ui --empty --gpu T4
+```
+
+Empty mode sets `COMFYUI_CONFIG_PROFILE=empty`, uses tracked
+`config.empty.toml`, and targets Modal Environment `empty`. Modal Environment
+isolation gives empty mode separate same-named Volumes, Apps, and Secrets. Empty
+mode does not mount normal prepare secrets and must work without `ComfyUI` or
+`civitai-api-key`. An empty config alone is insufficient if an old model
+manifest remains in the same Volume.
+
+### Local-Only Helpers
+
+`scripts/report_workflow_issue.py` and `scripts/run_and_report.py` are local
+troubleshooting helpers. They are ignored and must not be re-committed. Since
+they were previously committed, removing them from future pushes requires a
+separate cleanup commit using `git rm --cached`.
+
+### Windows and Encoding
+
+Direct `modal serve` emits Unicode glyphs that can break a Windows GBK
+terminal. Use `python serve.py --gpu L4`; it sets UTF-8 environment variables
+and manages stuck apps. If a direct serve is stuck at `Running app...`, inspect
+`modal app list`, stop the stale ephemeral app, and restart through `serve.py`.
+
+### Repository Architecture
+
+```text
+client/       local inference, watcher, utilities, result downloads
+server/       Modal app, Web UI, headless generation, ComfyUI runtime
+config/       model/plugin schema and loader
+scripts/      TUI, Modal status/commands, Volume and deployment helpers
+tests/        version-controlled pytest suite
+workflows/    JSON workflow seeds copied into the image
+```
+
+Important server boundaries:
+
+- `server/app.py` owns the Modal App/Image/Volumes and model preparation.
+- `server/ui.py` owns the nginx-backed Web UI function.
+- `server/generate.py` owns headless inference execution.
+- `server/comfy_runtime.py` owns ComfyUI launch, supervision, readiness, and
+  runtime directory prerequisites.
+- `server/comfy_wrapper.py` owns ComfyUI subprocess/API interaction for
+  headless inference.
+- `server/model_manifest.py` owns prepared-model symlink manifest state.
+
+The `client/` directory runs locally; `server/` runs inside Modal containers.
+Do not mix these execution contexts.
+
+### Modal Volumes and Image Build
+
+| Volume | Mount | Contents |
+|---|---|---|
+| `comfy-cache` | `/cache` | model cache, prepared models, custom nodes, user workflows |
+| `comfy-output` | `/output` | headless outputs by session ID |
+
+The image pipeline is intentionally layered:
+
+1. Debian slim with Python 3.11; local development requires Python >=3.13.
+2. System and Python dependencies.
+3. ComfyUI installation.
+4. Config source and private `config.toml`.
+5. Optional model preparation through `modal run server/app.py::prepare`.
+6. Configured blessed custom-node installation.
+7. Workflow seed copy to `/root/comfy/workflow-seed`.
+8. nginx configuration copied to `/root/nginx.conf`.
+
+Model preparation reads `config.toml`, downloads into `/cache`, and symlinks
+models into ComfyUI directories. Never replace those symlinks with copies.
+
+### Model and Plugin Configuration
+
+Models and plugins are configured in gitignored `config.toml`:
+
+```toml
+[models.example]
+source = "huggingface"
+repo_id = "org/repo"
+filename = "model.safetensors"
+model_dir = "checkpoints"
+
+[plugins.example]
+node_id = "comfyui-example"
+```
+
+Each plugin needs `node_id`, `repo`, or both; `repo` takes priority. Rebuild
+the image after config changes. Do not put tokens in config, documentation,
+logs, or commits.
+
+### Custom Node Layers
+
+Two custom-node layers coexist:
+
+- **Blessed** — configured in `config.toml`, installed into the image during
+  build, and loaded from the image's own `custom_nodes/`.
+- **Experimental** — installed by ComfyUI-Manager at runtime into
+  `/cache/custom_nodes/`, persisted by the Volume.
+
+Do not rename, symlink, or mutate the image custom-node directory at runtime.
+`extra_model_paths.yaml` registers `/cache/custom_nodes` with `is_default: true`,
+making it ComfyUI's manager installation target. Promote a working experimental
+node by adding its repository to `config.toml`, rebuilding, then removing the
+old Volume copy manually.
+
+### Workflow Notes
+
+`workflows/` is copied to the image seed directory and seeded into the
+Volume-backed ComfyUI user directory before launch. Existing user workflows
+take precedence. The repository includes NewBie workflows using the configured
+UNET, dual CLIP encoders, VAE, and void LoRA; do not assume those model assets
+exist in empty mode.
+
+### Web UI and Output Watcher
+
+`@modal.web_server(8000)` exposes nginx, not ComfyUI directly. ComfyUI listens
+on `127.0.0.1:8188`. `serve.py` starts `client/watch.py` by default; the watcher
+polls `/history`, downloads images from `/view`, and writes them under local
+`output/`. Use `python serve.py --no-watch ...` to disable it or run
+`python -m client.watch <url>` manually.
+
+### Code Style and Operational Rules
+
+- Use `pathlib.Path` for filesystem paths.
+- Keep typed function signatures.
+- Use `subprocess.run(..., check=True)` for setup/download commands.
+- Keep Modal Account and Modal Secrets as separate TUI concepts.
+- Use fresh subprocesses when probing Modal account state after `modal setup`.
+- Keep remote operation review, immediate run metadata, attached logs, and
+  manual stop hints explicit.
+- Keep token-shaped values and private configuration out of logs and commits.
