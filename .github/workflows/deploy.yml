@@ -63,8 +63,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          sha="${REQUESTED_SHA:-${GITHUB_SHA}}"
-          git cat-file -e "${sha}^{commit}"
+          requested_ref="${REQUESTED_SHA:-${GITHUB_SHA}}"
+          git cat-file -e "${requested_ref}^{commit}"
+          sha="$(git rev-parse "${requested_ref}^{commit}")"
           git merge-base --is-ancestor "$sha" origin/main
 
           case "$REQUESTED_GPU" in
