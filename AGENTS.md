@@ -9,6 +9,7 @@ This file provides guidance to agents when working with code in this repository.
 - If `workflow_api.json` exists at repo root, build installs workflow deps via `comfy node install-deps --workflow=/root/workflow_api.json`; if absent, custom node setup is skipped with a warning.
 - Web UI traffic goes through `server/nginx.conf`: Modal exposes nginx on port `8000`, while ComfyUI listens only on `127.0.0.1:8188`.
 - The nginx workflow userdata rule is intentional: `/api/userdata/workflows/<file>` is proxied to `/api/userdata/workflows%2F<file>` so ComfyUI workflow read/write does not return 405 after `%2F` is decoded upstream.
+- The nginx reboot rule is intentional: `location = /api/v2/manager/reboot` intercepts only upstream 502/503/504 (ComfyUI Manager reboots by exiting, so nginx loses its upstream mid-request) and answers 202 `{}` from the internal `/_nginx/manager_reboot_accepted`. Every other endpoint keeps its real upstream status; do not generalize this mapping to other paths or 5xx codes.
 - Two Modal Volumes: `comfy-cache` mounted at `/cache` (model weights, custom nodes) and `comfy-output` mounted at `/output` (generated results by session ID).
 - Empty Web UI mode uses `COMFYUI_CONFIG_PROFILE=empty`, bakes `config.empty.toml`, and runs in Modal Environment `empty`; same-named Volumes are isolated by Modal Environment.
 - Empty Web UI mode must not mount default prepare secrets; the `empty` Modal Environment is expected to work without `ComfyUI` or `civitai-api-key` secrets.
