@@ -38,6 +38,37 @@ def _blocks(config: str) -> dict[str, str]:
     return blocks
 
 
+WORKFLOW_LOCATION = "location ~ ^/api/userdata/workflows/(.+)$"
+WORKFLOW_MAP = "map $request_uri $workflow_proxy_path"
+
+
+def test_workflow_proxy_handles_nested_paths_and_preserves_queries() -> None:
+    config = _read_config()
+    blocks = _blocks(config)
+    workflow = blocks[WORKFLOW_LOCATION]
+    route = re.compile(r"^/api/userdata/workflows/(.+)$")
+
+    assert WORKFLOW_MAP in config
+    assert route.fullmatch("/api/userdata/workflows/top.json")
+    assert route.fullmatch("/api/userdata/workflows/curated/nested.json")
+    assert "proxy_pass http://comfyui$workflow_proxy_path$is_args$args;" in workflow
+    assert "%2F" in config
+    assert "workflow_part10" in config
+    assert "workflow_part9" in config
+    assert "workflow_part6" in config
+    assert "workflow_part3" in config
+    assert "proxy_set_header Host $host;" in workflow
+    assert "proxy_set_header X-Real-IP $remote_addr;" in workflow
+    assert "proxy_http_version 1.1;" in workflow
+    assert 'proxy_set_header Connection "";' in workflow
+    assert config.index(WORKFLOW_LOCATION) < config.index("location / {")
+
+
+def test_workflow_proxy_does_not_intercept_upstream_errors() -> None:
+    workflow = _blocks(_read_config())[WORKFLOW_LOCATION]
+
+    assert "proxy_intercept_errors" not in workflow
+
 def test_manager_reboot_is_an_exact_location_proxying_to_comfyui() -> None:
     reboot = _blocks(_read_config())[REBOOT_LOCATION]
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.metadata
 import os
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -14,14 +15,37 @@ from pathlib import Path
 CACHE_MOUNT = "/cache"
 CACHE_CUSTOM_NODES = Path(CACHE_MOUNT) / "custom_nodes"
 CACHE_USER_DIR = Path(CACHE_MOUNT) / "user"
+CACHE_DEFAULT_USER_DIR = CACHE_USER_DIR / "default"
+CACHE_WORKFLOWS_DIR = CACHE_DEFAULT_USER_DIR / "workflows"
 
 _REQUIREMENT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def seed_workflows(seed_dir: Path, workflows_dir: Path) -> int:
+    """Copy repository workflow seeds into the writable user directory."""
+    if not seed_dir.is_dir():
+        return 0
+
+    copied = 0
+    for source in seed_dir.rglob("*.json"):
+        if not source.is_file():
+            continue
+        destination = workflows_dir / source.relative_to(seed_dir)
+        if destination.exists():
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        copied += 1
+    return copied
 
 
 def ensure_runtime_dirs() -> None:
     """Create Volume-backed ComfyUI directories before ComfyUI scans them."""
     CACHE_CUSTOM_NODES.mkdir(parents=True, exist_ok=True)
     CACHE_USER_DIR.mkdir(parents=True, exist_ok=True)
+    CACHE_WORKFLOWS_DIR.mkdir(parents=True, exist_ok=True)
+
+
 
 
 def missing_requirements(requirements: Path) -> list[str]:

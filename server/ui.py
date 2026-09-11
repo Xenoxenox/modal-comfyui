@@ -3,16 +3,20 @@ from __future__ import annotations
 import os
 import subprocess
 import threading
+from pathlib import Path
 
 import modal
 
+from server.app import WORKFLOW_SEED_DIR
 from server.comfy_runtime import (
     CACHE_CUSTOM_NODES,
     CACHE_MOUNT,
+    CACHE_WORKFLOWS_DIR,
     ComfySupervisor,
     ensure_runtime_dirs,
     missing_requirements,
     scannable_custom_node,
+    seed_workflows,
     validate_custom_node,
     wait_for_port,
 )
@@ -98,6 +102,9 @@ def _start_dep_installer(supervisor: ComfySupervisor) -> None:
 def ui():
     cache_vol.reload()
     ensure_runtime_dirs()
+    copied = seed_workflows(Path(WORKFLOW_SEED_DIR), CACHE_WORKFLOWS_DIR)
+    if copied:
+        print(f"Seeded {copied} workflow file(s) into {CACHE_WORKFLOWS_DIR}")
     _sync_model_links(MANIFEST_PATH)
     _report_unloadable_nodes()
     supervisor = ComfySupervisor(

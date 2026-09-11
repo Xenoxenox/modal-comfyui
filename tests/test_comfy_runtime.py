@@ -9,11 +9,13 @@ from server import comfy_runtime
 from server.comfy_runtime import (
     CACHE_CUSTOM_NODES,
     CACHE_USER_DIR,
+    CACHE_WORKFLOWS_DIR,
     ComfySupervisor,
     ensure_runtime_dirs,
     launch_comfy,
     missing_requirements,
     scannable_custom_node,
+    seed_workflows,
     validate_custom_node,
 )
 
@@ -56,13 +58,45 @@ def test_ensure_runtime_dirs_creates_volume_backed_directories(
 ) -> None:
     nodes = tmp_path / "custom_nodes"
     users = tmp_path / "user"
+    workflows = tmp_path / "workflows"
     monkeypatch.setattr(comfy_runtime, "CACHE_CUSTOM_NODES", nodes)
     monkeypatch.setattr(comfy_runtime, "CACHE_USER_DIR", users)
+    monkeypatch.setattr(comfy_runtime, "CACHE_WORKFLOWS_DIR", workflows)
 
     ensure_runtime_dirs()
 
     assert nodes.is_dir()
     assert users.is_dir()
+    assert workflows.is_dir()
+
+
+def test_seed_workflows_missing_seed_is_a_noop(tmp_path: Path) -> None:
+    assert seed_workflows(tmp_path / "missing", tmp_path / "workflows") == 0
+    assert not (tmp_path / "workflows").exists()
+
+
+def test_seed_workflows_copies_nested_json_only_and_preserves_existing_files(
+    tmp_path: Path,
+) -> None:
+    seed = tmp_path / "seed"
+    destination = tmp_path / "workflows"
+    (seed / "curated").mkdir(parents=True)
+    (seed / "top.json").write_text('{"name": "top"}', encoding="utf-8")
+    (seed / "curated" / "nested.json").write_text(
+        '{"name": "nested"}', encoding="utf-8"
+    )
+    (seed / "ignored.txt").write_text("not a workflow", encoding="utf-8")
+    (destination / "curated").mkdir(parents=True)
+    (destination / "curated" / "nested.json").write_text(
+        '{"name": "saved"}', encoding="utf-8"
+    )
+
+    assert seed_workflows(seed, destination) == 1
+    assert (destination / "top.json").read_text(encoding="utf-8") == '{"name": "top"}'
+    assert (destination / "curated" / "nested.json").read_text(encoding="utf-8") == (
+        '{"name": "saved"}'
+    )
+    assert not (destination / "ignored.txt").exists()
 
 
 def test_launch_comfy_serves_loopback_with_the_cache_user_directory(
