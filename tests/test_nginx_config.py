@@ -51,8 +51,11 @@ def test_workflow_proxy_handles_nested_paths_and_preserves_queries() -> None:
     assert WORKFLOW_MAP in config
     assert route.fullmatch("/api/userdata/workflows/top.json")
     assert route.fullmatch("/api/userdata/workflows/curated/nested.json")
-    assert "proxy_pass http://comfyui$workflow_proxy_path$is_args$args;" in workflow
+    assert "proxy_pass http://comfyui$workflow_proxy_path;" in workflow
     assert "%2F" in config
+    assert "default $request_uri;" in config
+    assert "workflow_query4" in config
+    assert "workflow_query1" in config
     assert "workflow_part10" in config
     assert "workflow_part9" in config
     assert "workflow_part6" in config

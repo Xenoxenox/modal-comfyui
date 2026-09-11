@@ -246,7 +246,7 @@ loading.
 
 - `@modal.web_server(8000)` exposes nginx, not ComfyUI directly.
 - ComfyUI listens on `127.0.0.1:8188`; nginx listens on `8000` and proxies HTTP plus `/ws` WebSocket traffic to ComfyUI.
-- `server/nginx.conf` includes a targeted workflow userdata rule that proxies `/api/userdata/workflows/<file>` to `/api/userdata/workflows%2F<file>`. This preserves ComfyUI workflow read/write when an upstream layer decodes `%2F` before route matching.
+- `server/nginx.conf` maps workflow userdata requests from the original `$request_uri`, re-encoding every nested separator as `%2F` before proxying to ComfyUI. Unmatched/deeper encoded paths and query strings pass through verbatim. This preserves ComfyUI workflow read/write when an upstream layer decodes `%2F` before route matching.
 - Do not change Web UI back to direct ComfyUI port `8000` unless you also provide an equivalent tested fix for workflow userdata POST/DELETE 405.
 - Web UI GPU defaults to `L4`; use `python serve.py --gpu <GPU>` or `python -m scripts.deploy_ui --gpu <GPU>` instead of setting env vars manually
 - GPU snapshots (`enable_gpu_snapshot`) for faster cold starts — **only works with `modal deploy`, not `modal serve`**
