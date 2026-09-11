@@ -133,14 +133,20 @@ def test_supervisor_restart_terminates_when_the_process_group_is_gone(
 
 def test_supervisor_restart_is_a_noop_after_exit(monkeypatch: pytest.MonkeyPatch) -> None:
     process = _FakeProcess(returncode=1)
+    signalled: list[tuple[int, int]] = []
     monkeypatch.setattr(comfy_runtime, "launch_comfy", lambda *args, **kwargs: process)
     monkeypatch.setattr(comfy_runtime.threading, "Thread", _NoThread)
+    monkeypatch.setattr(comfy_runtime.os, "getpgid", lambda pid: pid + 1)
+    monkeypatch.setattr(
+        comfy_runtime.os, "killpg", lambda pgid, sig: signalled.append((pgid, sig))
+    )
 
     supervisor = ComfySupervisor("127.0.0.1", 8188)
     supervisor.start()
     supervisor.request_restart()
 
     assert not process.terminated
+    assert signalled == []
 
 
 def test_supervisor_relaunches_through_launch_comfy_after_exit(
