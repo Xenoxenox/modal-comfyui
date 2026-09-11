@@ -27,6 +27,8 @@ plugins.py
 # Workflow
 workflows/
 !workflows/.gitkeep
+!/.github/workflows/
+!/.github/workflows/*.yml
 
 # Logs
 logs/
