@@ -122,7 +122,7 @@ def test_launch_comfy_serves_loopback_with_the_cache_user_directory(
         "--port",
         "8188",
         "--user-directory",
-        CACHE_USER_DIR.as_posix(),
+        str(CACHE_USER_DIR),
     ]
     assert captured["kwargs"]["start_new_session"] is True
 
@@ -134,9 +134,16 @@ def test_supervisor_restart_signals_the_whole_process_group(
     signalled: list[tuple[int, int]] = []
     monkeypatch.setattr(comfy_runtime, "launch_comfy", lambda *args, **kwargs: process)
     monkeypatch.setattr(comfy_runtime.threading, "Thread", _NoThread)
-    monkeypatch.setattr(comfy_runtime.os, "getpgid", lambda pid: pid + 1)
+    # ``os.getpgid``/``os.killpg`` are POSIX-only; inject them so the
+    # supervisor's signalling contract is exercised on every platform.
     monkeypatch.setattr(
-        comfy_runtime.os, "killpg", lambda pgid, sig: signalled.append((pgid, sig))
+        comfy_runtime.os, "getpgid", lambda pid: pid + 1, raising=False
+    )
+    monkeypatch.setattr(
+        comfy_runtime.os,
+        "killpg",
+        lambda pgid, sig: signalled.append((pgid, sig)),
+        raising=False,
     )
 
     supervisor = ComfySupervisor("127.0.0.1", 8188)
@@ -150,19 +157,27 @@ def test_supervisor_restart_terminates_when_the_process_group_is_gone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     process = _FakeProcess()
+    signalled: list[tuple[int, int]] = []
 
     def missing(pid: int) -> int:
         raise ProcessLookupError
 
     monkeypatch.setattr(comfy_runtime, "launch_comfy", lambda *args, **kwargs: process)
     monkeypatch.setattr(comfy_runtime.threading, "Thread", _NoThread)
-    monkeypatch.setattr(comfy_runtime.os, "getpgid", missing)
+    monkeypatch.setattr(comfy_runtime.os, "getpgid", missing, raising=False)
+    monkeypatch.setattr(
+        comfy_runtime.os,
+        "killpg",
+        lambda pgid, sig: signalled.append((pgid, sig)),
+        raising=False,
+    )
 
     supervisor = ComfySupervisor("127.0.0.1", 8188)
     supervisor.start()
     supervisor.request_restart()
 
     assert process.terminated
+    assert signalled == []
 
 
 def test_supervisor_restart_is_a_noop_after_exit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -170,9 +185,14 @@ def test_supervisor_restart_is_a_noop_after_exit(monkeypatch: pytest.MonkeyPatch
     signalled: list[tuple[int, int]] = []
     monkeypatch.setattr(comfy_runtime, "launch_comfy", lambda *args, **kwargs: process)
     monkeypatch.setattr(comfy_runtime.threading, "Thread", _NoThread)
-    monkeypatch.setattr(comfy_runtime.os, "getpgid", lambda pid: pid + 1)
     monkeypatch.setattr(
-        comfy_runtime.os, "killpg", lambda pgid, sig: signalled.append((pgid, sig))
+        comfy_runtime.os, "getpgid", lambda pid: pid + 1, raising=False
+    )
+    monkeypatch.setattr(
+        comfy_runtime.os,
+        "killpg",
+        lambda pgid, sig: signalled.append((pgid, sig)),
+        raising=False,
     )
 
     supervisor = ComfySupervisor("127.0.0.1", 8188)
