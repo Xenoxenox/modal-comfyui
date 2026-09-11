@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import os
 import subprocess
 import threading
@@ -12,6 +11,9 @@ from server.comfy_runtime import (
     CACHE_MOUNT,
     ComfySupervisor,
     ensure_runtime_dirs,
+    missing_requirements,
+    scannable_custom_node,
+    validate_custom_node,
     wait_for_port,
 )
 from server.model_manifest import (
@@ -41,30 +43,43 @@ def _commit_volume() -> None:
         print(f"WARNING: failed to commit comfy-cache: {exc}")
 
 
+def _report_unloadable_nodes() -> None:
+    for node_dir in sorted(CACHE_CUSTOM_NODES.iterdir()):
+        if not scannable_custom_node(node_dir):
+            continue
+        loadable, reason = validate_custom_node(node_dir)
+        if not loadable:
+            print(f"WARNING: custom node {node_dir.name} will not load: {reason}")
+
+
 def _start_dep_installer(supervisor: ComfySupervisor) -> None:
     def _install() -> None:
-        any_installed = False
+        installed_any = False
         for node_dir in CACHE_CUSTOM_NODES.iterdir():
-            if not node_dir.is_dir():
+            if not scannable_custom_node(node_dir):
                 continue
             req = node_dir / "requirements.txt"
             if not req.exists():
                 continue
-            marker = node_dir / ".deps-installed"
-            current_hash = hashlib.sha256(req.read_bytes()).hexdigest()
-            if marker.exists() and marker.read_text().strip() == current_hash:
+            missing = missing_requirements(req)
+            if not missing:
                 continue
             result = subprocess.run(
                 ["pip", "install", "-r", str(req), "-q"],
                 check=False,
             )
-            if result.returncode == 0:
-                marker.write_text(current_hash)
-                any_installed = True
-            else:
+            if result.returncode != 0:
                 print(f"WARNING: pip install failed for {req}")
-        if any_installed:
-            _commit_volume()
+                continue
+            still_missing = missing_requirements(req)
+            if still_missing:
+                print(
+                    f"WARNING: pip install for {req} left "
+                    f"{', '.join(still_missing)} missing"
+                )
+                continue
+            installed_any = True
+        if installed_any:
             supervisor.request_restart()
 
     threading.Thread(target=_install, daemon=True).start()
@@ -84,6 +99,7 @@ def ui():
     cache_vol.reload()
     ensure_runtime_dirs()
     _sync_model_links(MANIFEST_PATH)
+    _report_unloadable_nodes()
     supervisor = ComfySupervisor(
         "127.0.0.1",
         COMFYUI_PORT,
