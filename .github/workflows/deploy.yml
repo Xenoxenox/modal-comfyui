@@ -1,0 +1,220 @@
+name: Deploy Modal Web UI
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Commit SHA from main to deploy; blank uses the selected ref.
+        required: false
+        type: string
+      target:
+        description: Deployment target.
+        required: true
+        type: choice
+        options:
+          - staging-empty
+          - production
+      gpu:
+        description: Modal GPU class.
+        required: true
+        default: L4
+        type: choice
+        options:
+          - T4
+          - L4
+          - L40S
+          - A10G
+          - A100-40GB
+          - A100-80GB
+          - H100
+          - H200
+          - B200
+      reason:
+        description: Reason for this deployment or rollback.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  UV_VERSION: "0.11.14"
+
+jobs:
+  resolve:
+    name: resolve deployment
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      gpu: ${{ steps.resolve.outputs.gpu }}
+    steps:
+      - name: Check out main history
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and validate commit
+        id: resolve
+        env:
+          REQUESTED_SHA: ${{ inputs.commit_sha }}
+          REQUESTED_GPU: ${{ inputs.gpu }}
+          TARGET: ${{ inputs.target }}
+          DEPLOY_REASON: ${{ inputs.reason }}
+        run: |
+          set -euo pipefail
+
+          sha="${REQUESTED_SHA:-${GITHUB_SHA}}"
+          git cat-file -e "${sha}^{commit}"
+          git merge-base --is-ancestor "$sha" origin/main
+
+          case "$REQUESTED_GPU" in
+            T4|L4|L40S|A10G|A100-40GB|A100-80GB|H100|H200|B200) ;;
+            *) echo "Unsupported GPU: $REQUESTED_GPU" >&2; exit 1 ;;
+          esac
+
+          case "$TARGET" in
+            staging-empty|production) ;;
+            *) echo "Unsupported deployment target: $TARGET" >&2; exit 1 ;;
+          esac
+          printf 'sha=%s\n' "$sha" >> "$GITHUB_OUTPUT"
+          printf 'gpu=%s\n' "$REQUESTED_GPU" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Deployment request"
+            echo "- Target: \\`$TARGET\\`"
+            echo "- Commit: \\`$sha\\`"
+            echo "- GPU: \\`$REQUESTED_GPU\\`"
+            echo "- Reason: $DEPLOY_REASON"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  ci:
+    name: validate deployment commit
+    needs: resolve
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.resolve.outputs.sha }}
+
+  deploy:
+    name: deploy (${{ inputs.target }})
+    needs:
+      - resolve
+      - ci
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.target }}
+      url: ${{ vars.COMFYUI_URL }}
+    concurrency:
+      group: modal-${{ inputs.target }}
+      cancel-in-progress: false
+    steps:
+      - name: Check out validated commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          fetch-depth: 0
+
+      - name: Install Python 3.13
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.13"
+          check-latest: true
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@557e51de59eb14aaaba2ed9621916900a91d50c6
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Sync deployment environment
+        run: uv sync --frozen
+
+      - name: Write production configuration
+        if: ${{ inputs.target == 'production' }}
+        env:
+          CONFIG_TOML_B64: ${{ secrets.MODAL_CONFIG_TOML_B64 }}
+          WORKFLOW_API_JSON_B64: ${{ secrets.WORKFLOW_API_JSON_B64 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CONFIG_TOML_B64"
+          printf '%s' "$CONFIG_TOML_B64" | base64 --decode > config.toml
+          if [[ -n "${WORKFLOW_API_JSON_B64:-}" ]]; then
+            printf '%s' "$WORKFLOW_API_JSON_B64" | base64 --decode > workflow_api.json
+          fi
+          uv run python -c 'from pathlib import Path; from config.loader import load_config; load_config(Path("config.toml"))'
+          if [[ -f workflow_api.json ]]; then
+            uv run python -c 'import json; from pathlib import Path; json.load(Path("workflow_api.json").open(encoding="utf-8"))'
+          fi
+
+      - name: Deploy empty staging Web UI
+        if: ${{ inputs.target == 'staging-empty' }}
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p logs
+          uv run python -m scripts.deploy_ui --empty --gpu "${{ needs.resolve.outputs.gpu }}" 2>&1 \
+            | tee "logs/deploy-${{ inputs.target }}-${{ github.run_id }}.log"
+
+      - name: Deploy production Web UI
+        if: ${{ inputs.target == 'production' }}
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          MODAL_ENVIRONMENT: ${{ vars.MODAL_ENVIRONMENT }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--profile default --gpu "${{ needs.resolve.outputs.gpu }}")
+          if [[ -n "${MODAL_ENVIRONMENT:-}" ]]; then
+            args+=(--env "$MODAL_ENVIRONMENT")
+          fi
+          mkdir -p logs
+          uv run python -m scripts.deploy_ui "${args[@]}" 2>&1 \
+            | tee "logs/deploy-${{ inputs.target }}-${{ github.run_id }}.log"
+
+      - name: Verify Web UI health
+        env:
+          COMFYUI_URL: ${{ vars.COMFYUI_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$COMFYUI_URL"
+          COMFYUI_URL="$COMFYUI_URL" uv run python - <<'PY'
+          import json
+          import os
+          import time
+          from urllib.request import Request, urlopen
+
+          url = os.environ["COMFYUI_URL"].rstrip("/") + "/system_stats"
+          deadline = time.monotonic() + 300
+          last_error = "not attempted"
+          while time.monotonic() < deadline:
+              try:
+                  with urlopen(Request(url), timeout=15) as response:
+                      if not 200 <= response.status < 300:
+                          raise RuntimeError(f"HTTP {response.status}")
+                      json.loads(response.read())
+                  print("Web UI health check passed")
+                  break
+              except Exception as exc:
+                  last_error = str(exc)
+                  time.sleep(10)
+          else:
+              raise SystemExit(f"Web UI health check failed: {last_error}")
+          PY
+
+      - name: Upload deployment log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: deploy-log-${{ inputs.target }}-${{ github.run_id }}
+          path: logs/deploy-*.log
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Remove private deployment inputs
+        if: always()
+        shell: bash
+        run: rm -f config.toml workflow_api.json
