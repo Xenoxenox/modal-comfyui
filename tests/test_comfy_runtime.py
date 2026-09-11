@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import signal
 from pathlib import Path
 
 import pytest
@@ -11,11 +12,15 @@ from server.comfy_runtime import (
     ComfySupervisor,
     ensure_runtime_dirs,
     launch_comfy,
+    missing_requirements,
+    scannable_custom_node,
+    validate_custom_node,
 )
 
 
 class _FakeProcess:
     def __init__(self, returncode: int | None = None) -> None:
+        self.pid = 4321
         self.returncode = returncode
         self.terminated = False
         self.killed = False
@@ -67,6 +72,7 @@ def test_launch_comfy_serves_loopback_with_the_cache_user_directory(
 
     def fake_popen(args, *rest, **kwargs):
         captured["args"] = args
+        captured["kwargs"] = kwargs
         return _FakeProcess()
 
     monkeypatch.setattr(comfy_runtime.subprocess, "Popen", fake_popen)
@@ -84,14 +90,39 @@ def test_launch_comfy_serves_loopback_with_the_cache_user_directory(
         "--user-directory",
         CACHE_USER_DIR.as_posix(),
     ]
+    assert captured["kwargs"]["start_new_session"] is True
 
 
-def test_supervisor_restart_terminates_the_running_process(
+def test_supervisor_restart_signals_the_whole_process_group(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     process = _FakeProcess()
+    signalled: list[tuple[int, int]] = []
     monkeypatch.setattr(comfy_runtime, "launch_comfy", lambda *args, **kwargs: process)
     monkeypatch.setattr(comfy_runtime.threading, "Thread", _NoThread)
+    monkeypatch.setattr(comfy_runtime.os, "getpgid", lambda pid: pid + 1)
+    monkeypatch.setattr(
+        comfy_runtime.os, "killpg", lambda pgid, sig: signalled.append((pgid, sig))
+    )
+
+    supervisor = ComfySupervisor("127.0.0.1", 8188)
+    supervisor.start()
+    supervisor.request_restart()
+
+    assert signalled == [(process.pid + 1, signal.SIGTERM)]
+
+
+def test_supervisor_restart_terminates_when_the_process_group_is_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = _FakeProcess()
+
+    def missing(pid: int) -> int:
+        raise ProcessLookupError
+
+    monkeypatch.setattr(comfy_runtime, "launch_comfy", lambda *args, **kwargs: process)
+    monkeypatch.setattr(comfy_runtime.threading, "Thread", _NoThread)
+    monkeypatch.setattr(comfy_runtime.os, "getpgid", missing)
 
     supervisor = ComfySupervisor("127.0.0.1", 8188)
     supervisor.start()
@@ -140,3 +171,97 @@ def test_supervisor_relaunches_through_launch_comfy_after_exit(
 def test_cache_paths_live_under_the_cache_mount() -> None:
     assert CACHE_CUSTOM_NODES.as_posix() == "/cache/custom_nodes"
     assert CACHE_USER_DIR.as_posix() == "/cache/user"
+
+
+def test_missing_requirements_names_distributions_the_interpreter_lacks(tmp_path: Path) -> None:
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text(
+        "# brotli - metadata decompression\n"
+        "\n"
+        "-r other-requirements.txt\n"
+        "pytest>=8\n"
+        "zzz-uninstalled-fixture >= 1  # inline comment\n",
+        encoding="utf-8",
+    )
+
+    assert missing_requirements(requirements) == ["zzz-uninstalled-fixture"]
+
+
+def test_missing_requirements_is_empty_when_every_distribution_is_installed(
+    tmp_path: Path,
+) -> None:
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text("pytest>=8\n", encoding="utf-8")
+
+    assert missing_requirements(requirements) == []
+
+
+def test_validate_custom_node_requires_a_package_entry(tmp_path: Path) -> None:
+    node_dir = tmp_path / "pack"
+    node_dir.mkdir()
+
+    assert validate_custom_node(node_dir) == (False, "missing __init__.py")
+
+
+def test_validate_custom_node_accepts_a_pack_with_installed_dependencies(
+    tmp_path: Path,
+) -> None:
+    node_dir = tmp_path / "pack"
+    node_dir.mkdir()
+    (node_dir / "__init__.py").write_text("", encoding="utf-8")
+    (node_dir / "requirements.txt").write_text("pytest>=8\n", encoding="utf-8")
+
+    assert validate_custom_node(node_dir) == (True, None)
+
+
+def test_validate_custom_node_accepts_a_pack_without_requirements(tmp_path: Path) -> None:
+    node_dir = tmp_path / "pack"
+    node_dir.mkdir()
+    (node_dir / "__init__.py").write_text("", encoding="utf-8")
+
+    assert validate_custom_node(node_dir) == (True, None)
+
+
+def test_validate_custom_node_ignores_a_volume_recorded_dependency_state(
+    tmp_path: Path,
+) -> None:
+    node_dir = tmp_path / "pack"
+    node_dir.mkdir()
+    (node_dir / "__init__.py").write_text("", encoding="utf-8")
+    (node_dir / "requirements.txt").write_text(
+        "zzz-uninstalled-fixture\n", encoding="utf-8"
+    )
+    (node_dir / ".deps-installed").write_text(
+        "written by a previous container", encoding="utf-8"
+    )
+
+    assert validate_custom_node(node_dir) == (
+        False,
+        "missing python dependency: zzz-uninstalled-fixture",
+    )
+
+
+def test_scannable_custom_node_mirrors_the_comfyui_scan(tmp_path: Path) -> None:
+    pack = tmp_path / "pack"
+    pack.mkdir()
+    single_file = tmp_path / "node.py"
+    single_file.write_text("", encoding="utf-8")
+    disabled = tmp_path / "old-pack.disabled"
+    disabled.mkdir()
+    bytecode = tmp_path / "__pycache__"
+    bytecode.mkdir()
+    unrelated = tmp_path / "notes.txt"
+    unrelated.write_text("", encoding="utf-8")
+
+    assert scannable_custom_node(pack) is True
+    assert scannable_custom_node(single_file) is True
+    assert scannable_custom_node(disabled) is False
+    assert scannable_custom_node(bytecode) is False
+    assert scannable_custom_node(unrelated) is False
+
+
+def test_validate_custom_node_accepts_a_single_file_node(tmp_path: Path) -> None:
+    node_file = tmp_path / "node.py"
+    node_file.write_text("", encoding="utf-8")
+
+    assert validate_custom_node(node_file) == (True, None)
