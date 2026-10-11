@@ -113,8 +113,8 @@ def ui():
         on_exit=_commit_volume,
     )
     supervisor.start()
-    _start_dep_installer(supervisor)
     wait_for_port("127.0.0.1", COMFYUI_PORT, STARTUP_TIMEOUT)
     subprocess.Popen(
         ["nginx", "-c", NGINX_CONF, "-g", "daemon off;"]
     )
+    _start_dep_installer(supervisor)
