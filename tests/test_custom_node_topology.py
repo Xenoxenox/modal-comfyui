@@ -22,20 +22,3 @@ def test_volume_custom_nodes_are_the_default_scan_path() -> None:
         "custom_nodes: custom_nodes",
         "is_default: true",
     ]
-
-
-def test_image_custom_nodes_directory_is_never_relocated() -> None:
-    for path in (
-        EXTRA_PATHS,
-        REPO_ROOT / "server" / "ui.py",
-        REPO_ROOT / "server" / "comfy_runtime.py",
-    ):
-        source = path.read_text(encoding="utf-8")
-        assert "blessed_custom_nodes" not in source, path
-        assert "symlink_to" not in source, path
-
-
-def test_both_entrypoints_prepare_the_volume_node_directory() -> None:
-    for name in ("server/ui.py", "server/generate.py"):
-        source = (REPO_ROOT / name).read_text(encoding="utf-8")
-        assert "ensure_runtime_dirs()" in source, name

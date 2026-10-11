@@ -239,6 +239,12 @@ Experimental nodes load side by side with no symlink and no runtime rename.
 
 This means Experimental nodes survive app stop/restart and cold starts.
 
+Their Python dependencies do not persist with the Volume. After ComfyUI first
+becomes ready and nginx is launched, the Web UI checks the current interpreter
+and installs missing requirements in the background. A successful install then
+restarts ComfyUI so affected nodes can load; dependency recovery never restarts
+ComfyUI during its initial readiness wait.
+
 #### Promoting Experimental → Blessed
 
 To promote a Manager-installed node to Blessed:
