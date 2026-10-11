@@ -189,7 +189,7 @@ jobs:
           from urllib.request import Request, urlopen
 
           url = os.environ["COMFYUI_URL"].rstrip("/") + "/system_stats"
-          deadline = time.monotonic() + 300
+          deadline = time.monotonic() + 600
           last_error = "not attempted"
           while time.monotonic() < deadline:
               try:
