@@ -1,2 +1,2 @@
-comfy-cli
+comfy-cli>=1.22.0
 huggingface_hub
