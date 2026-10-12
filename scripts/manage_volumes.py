@@ -56,6 +56,7 @@ FREE_TIER_REFERENCE_BYTES = 1024**4
 USAGE_CACHE_PATH = Path(".cache") / "modal-comfyui" / "volume_usage.json"
 MODEL_SIZE_CACHE_PATH = Path(".cache") / "modal-comfyui" / "model_file_sizes.json"
 DELETED_MODEL_CACHE_PATH = Path(".cache") / "modal-comfyui" / "deleted_model_files.json"
+_HF_CACHE_REPO_PREFIX = "models--"
 
 
 
@@ -353,6 +354,67 @@ def remove_volume_model_files(cache_paths: list[str]) -> tuple[list[str], list[t
     if removed:
         forget_cached_model_files(removed)
         _mark_deleted_model_files(removed)
+    return removed, failed
+
+def _huggingface_cache_repo_path(cache_path: str) -> str | None:
+    """Return the safe Volume root for one Hugging Face repo cache."""
+    volume_path = _cache_to_volume_path(cache_path)
+    parts = PurePosixPath(volume_path).parts
+    if len(parts) < 2 or parts[0] != "/":
+        return None
+    repo_name = parts[1]
+    if not repo_name.startswith(_HF_CACHE_REPO_PREFIX) or len(repo_name) == len(_HF_CACHE_REPO_PREFIX):
+        return None
+    return f"/{repo_name}"
+
+
+def list_huggingface_cache_repositories() -> list[str]:
+    """List complete Hugging Face repo caches at the comfy-cache root."""
+    volume = modal.Volume.from_name(CACHE_VOLUME)
+    repositories: list[str] = []
+    for entry in volume.listdir("/"):
+        path = str(entry.path).rstrip("/")
+        if entry_type(entry) == "dir" and _huggingface_cache_repo_path(path) == path:
+            repositories.append(path)
+    return sorted(repositories)
+
+
+def remove_huggingface_cache_repositories(
+    repository_paths: list[str],
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Delete whole Hugging Face repo caches, including blobs/refs/snapshots."""
+    volume = modal.Volume.from_name(CACHE_VOLUME)
+    selected = sorted(set(repository_paths))
+    removed: list[str] = []
+    failed: list[tuple[str, str]] = []
+    try:
+        manifest_cache_paths = [
+            str(item.get("cache_path", ""))
+            for item in _load_model_manifest()
+            if isinstance(item, dict)
+        ]
+    except Exception:
+        manifest_cache_paths = []
+
+    for repository_path in selected:
+        if _huggingface_cache_repo_path(repository_path) != repository_path:
+            failed.append((repository_path, "not a safe Hugging Face cache root"))
+            continue
+        try:
+            volume.remove_file(repository_path, recursive=True)
+            removed.append(repository_path)
+            cache_paths = [
+                cache_path
+                for cache_path in manifest_cache_paths
+                if _huggingface_cache_repo_path(cache_path) == repository_path
+            ]
+            forget_cached_model_files(cache_paths)
+            _mark_deleted_model_files(cache_paths)
+        except Exception as exc:
+            if "No such file or directory" in str(exc):
+                removed.append(repository_path)
+                continue
+            failed.append((repository_path, str(exc)))
     return removed, failed
 
 
@@ -767,6 +829,50 @@ def delete_remote_model_files(orphan_cache_paths: set[str] | None = None) -> Non
         console.print(f"[red]Failed:[/] {cache_path} [dim]{error}[/]")
 
 
+def delete_huggingface_cache_repositories() -> None:
+    """Interactively delete complete Hugging Face repo caches."""
+    try:
+        repositories = list_huggingface_cache_repositories()
+    except Exception as exc:
+        print_status(f"List Hugging Face caches failed: {exc}", style="red")
+        return
+    if not repositories:
+        print_status("No Hugging Face repo caches found.", style="yellow")
+        return
+
+    selected = questionary.checkbox(
+        "Select complete Hugging Face caches to delete:",
+        choices=[
+            questionary.Choice(path.removeprefix("/"), value=path)
+            for path in repositories
+        ],
+        style=STYLE,
+    ).ask()
+    if not selected:
+        print_status("No Hugging Face caches selected.", style="yellow")
+        return
+    if not ask_confirm(
+        f"Delete {len(selected)} complete Hugging Face cache(s) from {CACHE_VOLUME}?",
+        default=False,
+        instruction=(
+            "This recursively removes blobs, refs, snapshots, and all cached revisions. "
+            "Models still referenced by config.toml will be downloaded again by prepare."
+        ),
+    ):
+        return
+
+    removed, failed = remove_huggingface_cache_repositories(list(selected))
+    print_result_panel(
+        "[bold green]Hugging Face Cache Cleanup Complete[/bold green]",
+        [
+            ("Removed", len(removed)),
+            ("Failed", len(failed) or None),
+            ("Volume", CACHE_VOLUME),
+        ],
+    )
+    for path, error in failed[:5]:
+        console.print(f"[red]Failed:[/] {path} [dim]{error}[/]")
+
 def volume_management_menu(orphan_cache_paths: set[str] | None = None) -> None:
     orphan_cache_paths = set(orphan_cache_paths or ())
     while True:
@@ -801,6 +907,11 @@ def volume_management_menu(orphan_cache_paths: set[str] | None = None) -> None:
                 value=("delete-models", CACHE_VOLUME),
                 description="Delete selected prepared model files from comfy-cache.",
             ),
+            questionary.Choice(
+                "Delete complete Hugging Face caches",
+                value=("delete-hf-caches", CACHE_VOLUME),
+                description="Recursively delete models--... caches, including blobs/refs/snapshots.",
+            ),
         ]
         if orphan_cache_paths:
             choices.append(
@@ -834,6 +945,8 @@ def volume_management_menu(orphan_cache_paths: set[str] | None = None) -> None:
             download_output_session()
         elif kind == "delete-models":
             delete_remote_model_files(orphan_cache_paths=orphan_cache_paths)
+        elif kind == "delete-hf-caches":
+            delete_huggingface_cache_repositories()
         elif kind == "prune-orphans":
             orphan_cache_paths = prune_orphan_model_files(orphan_cache_paths=orphan_cache_paths)
         elif kind == "clean":

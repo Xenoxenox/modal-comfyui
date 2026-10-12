@@ -177,9 +177,9 @@ def hf_download(
     )
 
     target = Path(model_dir) / _target_name(filename, save_as)
-    _link_cached_path(Path(cached), target)
+    link_cached_path(Path(cached), target)
     print(f"DONE huggingface {repo_id}/{filename} -> {target}", flush=True)
-    return _manifest_item(Path(cached), target, "huggingface")
+    return manifest_item(Path(cached), target, "huggingface")
 
 
 def download_external_model(
@@ -210,9 +210,9 @@ def download_external_model(
         print(f"SKIP external cached {cached_path}", flush=True)
 
     target_path = Path(model_dir) / filename
-    _link_cached_path(cached_path, target_path)
+    link_cached_path(cached_path, target_path)
     print(f"DONE external {filename} -> {target_path}", flush=True)
-    return _manifest_item(cached_path, target_path, "external")
+    return manifest_item(cached_path, target_path, "external")
 
 
 def link_local_model(
@@ -228,9 +228,9 @@ def link_local_model(
 
     print(f"START local {filename}", flush=True)
     target_path = Path(model_dir) / _target_name(filename, save_as)
-    _link_cached_path(cached_path, target_path)
+    link_cached_path(cached_path, target_path)
     print(f"DONE local {filename} -> {target_path}", flush=True)
-    return _manifest_item(cached_path, target_path, "local")
+    return manifest_item(cached_path, target_path, "local")
 
 
 def hf_snapshot_download(
@@ -251,9 +251,9 @@ def hf_snapshot_download(
     )
 
     target_path = Path(target_dir)
-    _link_cached_path(Path(local_dir), target_path)
+    link_cached_path(Path(local_dir), target_path)
     print(f"DONE huggingface_snapshot {repo_id} -> {target_dir}", flush=True)
-    return _manifest_item(Path(local_dir), target_path, "huggingface_snapshot")
+    return manifest_item(Path(local_dir), target_path, "huggingface_snapshot")
 
 
 def _model_plan_summary(
